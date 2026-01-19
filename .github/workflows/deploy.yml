@@ -1,0 +1,60 @@
+name: Deploy to Azure Functions
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      update_settings:
+        description: 'Update Azure app settings (DISCORD_WEBHOOK_URL, USER_MAPPING)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          pushd '${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+          popd
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
+          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          scm-do-build-during-deployment: true
+          enable-oryx-build: true
+
+      - name: Update App Settings
+        if: ${{ github.event.inputs.update_settings == 'true' }}
+        uses: azure/appservice-settings@v1
+        with:
+          app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
+          mask-inputs: true
+          app-settings-json: |
+            [
+              { "name": "DISCORD_WEBHOOK_URL", "value": "${{ secrets.DISCORD_WEBHOOK_URL }}", "slotSetting": false },
+              { "name": "USER_MAPPING", "value": "${{ secrets.USER_MAPPING_JSON }}", "slotSetting": false }
+            ]
+        env:
+          SCM_CREDENTIALS: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}

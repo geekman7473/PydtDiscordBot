@@ -1,0 +1,17 @@
+.git*
+.vscode
+__azurite_db*__.json
+__blobstorage__
+__queuestorage__
+local.settings.json
+test
+.venv
+venv
+.python_packages
+.pytest_cache
+__pycache__
+*.pyc
+.coverage
+htmlcov
+.env
+*.md
