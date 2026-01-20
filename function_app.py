@@ -109,12 +109,12 @@ def pydt_webhook(req: func.HttpRequest) -> func.HttpResponse:
 
         # Format the message
         if discord_user_id:
-            message = f"<@{discord_user_id}> - Your turn in \"{game_name}\" (Round {round_num})"
+            message = f"<@{discord_user_id}> - Your turn in \"{game_name}\" (Round {round_num}) as {leader_name} of {civ_name}"
         else:
             logging.warning(f"No Discord mapping found for Steam user: {steam_username}")
             admonishment = random.choice(ADMONISHMENTS)
             message = (
-                f"@everyone - It's \"{steam_username}\"'s turn in \"{game_name}\" (Round {round_num})\n\n"
+                f"@everyone - It's \"{steam_username}\"'s turn in \"{game_name}\" (Round {round_num}) as {leader_name} of {civ_name}\n\n"
                 f"{admonishment}"
             )
 
