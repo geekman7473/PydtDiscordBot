@@ -6,12 +6,6 @@ on:
       - main
       - master
   workflow_dispatch:
-    inputs:
-      update_settings:
-        description: 'Update Azure app settings (DISCORD_WEBHOOK_URL, USER_MAPPING)'
-        required: false
-        type: boolean
-        default: false
 
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
@@ -47,7 +41,6 @@ jobs:
           enable-oryx-build: true
 
       - name: Update App Settings
-        if: ${{ github.event.inputs.update_settings == 'true' }}
         uses: azure/appservice-settings@v1
         with:
           app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}

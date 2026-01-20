@@ -173,8 +173,7 @@ curl -X POST "https://$FUNCTION_APP.azurewebsites.net/api/pydt-webhook" \
 When players join or leave:
 
 1. Update the `USER_MAPPING_JSON` secret in GitHub (Settings → Secrets → Actions)
-2. Go to Actions → "Deploy to Azure Functions" → Run workflow
-3. Check "Update Azure app settings" and click "Run workflow"
+2. Go to Actions → "Deploy to Azure Functions" → Run workflow → Run workflow
 
 The workflow will push the updated mapping to Azure.
 
