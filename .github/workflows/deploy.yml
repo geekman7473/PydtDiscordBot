@@ -49,10 +49,5 @@ jobs:
         uses: azure/appservice-settings@v1
         with:
           app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
-          resource-group: pydt-bot-rg
           mask-inputs: true
-          app-settings-json: |
-            [
-              { "name": "DISCORD_WEBHOOK_URL", "value": "${{ secrets.DISCORD_WEBHOOK_URL }}", "slotSetting": false },
-              { "name": "USER_MAPPING", "value": "${{ secrets.USER_MAPPING_JSON }}", "slotSetting": false }
-            ]
+          app-settings-json: '[{"name": "DISCORD_WEBHOOK_URL", "value": "${{ secrets.DISCORD_WEBHOOK_URL }}", "slotSetting": false}, {"name": "USER_MAPPING", "value": ${{ toJson(secrets.USER_MAPPING_JSON) }}, "slotSetting": false}]'
