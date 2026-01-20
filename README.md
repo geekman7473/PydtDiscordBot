@@ -57,6 +57,9 @@ az storage account create  --name $STORAGE_ACCOUNT --resource-group $RESOURCE_GR
 # Create Function App (Consumption plan). This also might take a long time.
 az functionapp create --name $FUNCTION_APP --resource-group $RESOURCE_GROUP --storage-account $STORAGE_ACCOUNT --consumption-plan-location $LOCATION --runtime python --runtime-version 3.11 --functions-version 4  --os-type Linux
 
+# Enable basic auth for SCM (required for publish profile deployment via HTTPS)
+az resource update --resource-group $RESOURCE_GROUP --name scm --namespace Microsoft.Web --resource-type basicPublishingCredentialsPolicies --parent sites/$FUNCTION_APP --set properties.allow=true
+
 # Note your function app name - you'll need it later
 echo "Your Function App name is: $FUNCTION_APP"
 echo "Your webhook URL will be: https://$FUNCTION_APP.azurewebsites.net/api/pydt-webhook"
