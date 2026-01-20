@@ -109,7 +109,7 @@ You need each player's Discord user ID to enable @mentions.
 
 ### 5. Configure GitHub Secrets
 
-You need to add six secrets to your GitHub repository.
+You need to add five secrets to your GitHub repository.
 
 #### Option A: Using GitHub CLI
 
@@ -126,11 +126,8 @@ gh secret set DISCORD_WEBHOOK_URL --body "https://discord.com/api/webhooks/YOUR_
 # Set user mapping (use single quotes to preserve JSON)
 gh secret set USER_MAPPING_JSON --body '{"SteamPlayer1": "123456789012345678", "SteamPlayer2": "234567890123456789"}'
 
-# Set Azure credentials (paste the JSON from step 6 when prompted, then Ctrl+D)
+# Set Azure credentials (paste the JSON from step 2 when prompted, then Ctrl+D)
 gh secret set AZURE_CREDENTIALS
-
-# Set your resource group name
-gh secret set AZURE_RESOURCE_GROUP --body "pydt-bot-rg"
 ```
 
 #### Option B: Using GitHub Web UI
@@ -145,7 +142,6 @@ gh secret set AZURE_RESOURCE_GROUP --body "pydt-bot-rg"
 | `DISCORD_WEBHOOK_URL` | Your Discord webhook URL from step 3 |
 | `USER_MAPPING_JSON` | Your JSON mapping from step 4 |
 | `AZURE_CREDENTIALS` | The entire JSON output from step 2 |
-| `AZURE_RESOURCE_GROUP` | Your resource group name (e.g., `pydt-bot-rg`) |
 
 ### 6. Deploy
 
