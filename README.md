@@ -60,10 +60,25 @@ az functionapp create --name $FUNCTION_APP --resource-group $RESOURCE_GROUP --st
 # Enable basic auth for SCM (required for publish profile deployment via HTTPS)
 az resource update --resource-group $RESOURCE_GROUP --name scm --namespace Microsoft.Web --resource-type basicPublishingCredentialsPolicies --parent sites/$FUNCTION_APP --set properties.allow=true
 
+# Get your subscription ID (for service principal)
+$SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+# Create a service principal with contributor access to your resource group
+# Save the JSON output - you'll need it for the AZURE_CREDENTIALS GitHub secret
+az ad sp create-for-rbac --name "github-deploy-pydt" --role contributor --scopes /subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP --json-auth
+
+# Download the publish profile (save the XML output)
+az functionapp deployment list-publishing-profiles --name $FUNCTION_APP --resource-group $RESOURCE_GROUP --xml
+
 # Note your function app name - you'll need it later
 echo "Your Function App name is: $FUNCTION_APP"
 echo "Your webhook URL will be: https://$FUNCTION_APP.azurewebsites.net/api/pydt-webhook"
 ```
+
+**Important outputs to save:**
+- The **JSON output** from `az ad sp create-for-rbac` (for `AZURE_CREDENTIALS` secret)
+- The **XML output** from the publish profile command (for `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` secret)
+- Your **Function App name** and **Resource Group name**
 
 ### 3. Create Discord Webhook
 
@@ -92,18 +107,9 @@ You need each player's Discord user ID to enable @mentions.
 
 > **Tip:** Steam usernames are what PYDT shows for each player. Check your PYDT game page to see the exact usernames.
 
-### 5. Get Azure Publish Profile
+### 5. Configure GitHub Secrets
 
-```bash
-# Download the publish profile (save the output)
-az functionapp deployment list-publishing-profiles --name $FUNCTION_APP --resource-group $RESOURCE_GROUP --xml
-```
-
-Copy the entire XML output (starts with `<publishData>` and ends with `</publishData>`).
-
-### 6. Configure GitHub Secrets
-
-You need to add four secrets to your GitHub repository.
+You need to add six secrets to your GitHub repository.
 
 #### Option A: Using GitHub CLI
 
@@ -119,6 +125,12 @@ gh secret set DISCORD_WEBHOOK_URL --body "https://discord.com/api/webhooks/YOUR_
 
 # Set user mapping (use single quotes to preserve JSON)
 gh secret set USER_MAPPING_JSON --body '{"SteamPlayer1": "123456789012345678", "SteamPlayer2": "234567890123456789"}'
+
+# Set Azure credentials (paste the JSON from step 6 when prompted, then Ctrl+D)
+gh secret set AZURE_CREDENTIALS
+
+# Set your resource group name
+gh secret set AZURE_RESOURCE_GROUP --body "pydt-bot-rg"
 ```
 
 #### Option B: Using GitHub Web UI
@@ -129,11 +141,13 @@ gh secret set USER_MAPPING_JSON --body '{"SteamPlayer1": "123456789012345678", "
 | Secret Name | Value |
 |-------------|-------|
 | `AZURE_FUNCTIONAPP_NAME` | Your function app name from step 2 |
-| `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` | The entire XML from step 5 |
+| `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` | The entire XML output from step 2 |
 | `DISCORD_WEBHOOK_URL` | Your Discord webhook URL from step 3 |
 | `USER_MAPPING_JSON` | Your JSON mapping from step 4 |
+| `AZURE_CREDENTIALS` | The entire JSON output from step 2 |
+| `AZURE_RESOURCE_GROUP` | Your resource group name (e.g., `pydt-bot-rg`) |
 
-### 7. Deploy
+### 6. Deploy
 
 Push to main to trigger the GitHub Actions deployment:
 
@@ -145,7 +159,7 @@ git push
 
 Monitor the deployment in your repo's **Actions** tab.
 
-### 8. Configure PYDT
+### 7. Configure PYDT
 
 1. Go to [playyourdamnturn.com](https://www.playyourdamnturn.com/)
 2. Open your game → **Edit Game** (or game settings)
@@ -156,7 +170,7 @@ Monitor the deployment in your repo's **Actions** tab.
    ```
 5. Save the settings
 
-### 9. Test It
+### 8. Test It
 
 Take a turn in your Civ game and upload it to PYDT. The next player should receive a Discord notification!
 
