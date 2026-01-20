@@ -43,32 +43,25 @@ az provider show --namespace Microsoft.Web --query "registrationState"
 # Should show "Registered" before proceeding. This may take a long time.
 
 # Set variables (customize these)
-$RESOURCE_GROUP="pydt-bot-rg"
 $LOCATION="westus"
-$STORAGE_ACCOUNT="pydtbotstorage-$(Get-Random)"  # Must be globally unique
+$STORAGE_ACCOUNT="pydtbotstorage$(Get-Random)"  # Must be globally unique
 $FUNCTION_APP="pydt-discord-bot-$(Get-Random)"   # Must be globally unique
 
 # Create resource group
-az group create --name $RESOURCE_GROUP --location $LOCATION
+az group create --name pydt-bot-rg --location $LOCATION
 
 # Create storage account (required for Azure Functions)
-az storage account create  --name $STORAGE_ACCOUNT --resource-group $RESOURCE_GROUP --location $LOCATION --sku Standard_LRS
+az storage account create --name $STORAGE_ACCOUNT --resource-group pydt-bot-rg --location $LOCATION --sku Standard_LRS --allow-blob-public-access false
 
-# Create Function App (Consumption plan). This also might take a long time.
-az functionapp create --name $FUNCTION_APP --resource-group $RESOURCE_GROUP --storage-account $STORAGE_ACCOUNT --consumption-plan-location $LOCATION --runtime python --runtime-version 3.11 --functions-version 4  --os-type Linux
-
-# Enable basic auth for SCM (required for publish profile deployment via HTTPS)
-az resource update --resource-group $RESOURCE_GROUP --name scm --namespace Microsoft.Web --resource-type basicPublishingCredentialsPolicies --parent sites/$FUNCTION_APP --set properties.allow=true
+# Create Function App (Flex Consumption plan). This also might take a long time.
+az functionapp create --name $FUNCTION_APP --resource-group pydt-bot-rg --storage-account $STORAGE_ACCOUNT --flexconsumption-location $LOCATION --runtime python --runtime-version 3.11
 
 # Get your subscription ID (for service principal)
 $SUBSCRIPTION_ID = (az account show --query id -o tsv)
 
 # Create a service principal with contributor access to your resource group
 # Save the JSON output - you'll need it for the AZURE_CREDENTIALS GitHub secret
-az ad sp create-for-rbac --name "github-deploy-pydt" --role contributor --scopes /subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP --json-auth
-
-# Download the publish profile (save the XML output)
-az functionapp deployment list-publishing-profiles --name $FUNCTION_APP --resource-group $RESOURCE_GROUP --xml
+az ad sp create-for-rbac --name "github-deploy-pydt" --role contributor --scopes /subscriptions/$SUBSCRIPTION_ID/resourceGroups/pydt-bot-rg --json-auth
 
 # Note your function app name - you'll need it later
 echo "Your Function App name is: $FUNCTION_APP"
@@ -77,8 +70,7 @@ echo "Your webhook URL will be: https://$FUNCTION_APP.azurewebsites.net/api/pydt
 
 **Important outputs to save:**
 - The **JSON output** from `az ad sp create-for-rbac` (for `AZURE_CREDENTIALS` secret)
-- The **XML output** from the publish profile command (for `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` secret)
-- Your **Function App name** and **Resource Group name**
+- Your **Function App name**
 
 ### 3. Create Discord Webhook
 
@@ -109,16 +101,13 @@ You need each player's Discord user ID to enable @mentions.
 
 ### 5. Configure GitHub Secrets
 
-You need to add five secrets to your GitHub repository.
+You need to add four secrets to your GitHub repository.
 
 #### Option A: Using GitHub CLI
 
 ```bash
 # Set the function app name
 gh secret set AZURE_FUNCTIONAPP_NAME --body "pydt-discord-bot-1234567890"
-
-# Set the publish profile (paste the XML when prompted, then Ctrl+D)
-gh secret set AZURE_FUNCTIONAPP_PUBLISH_PROFILE
 
 # Set Discord webhook URL
 gh secret set DISCORD_WEBHOOK_URL --body "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
@@ -138,7 +127,6 @@ gh secret set AZURE_CREDENTIALS
 | Secret Name | Value |
 |-------------|-------|
 | `AZURE_FUNCTIONAPP_NAME` | Your function app name from step 2 |
-| `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` | The entire XML output from step 2 |
 | `DISCORD_WEBHOOK_URL` | Your Discord webhook URL from step 3 |
 | `USER_MAPPING_JSON` | Your JSON mapping from step 4 |
 | `AZURE_CREDENTIALS` | The entire JSON output from step 2 |
@@ -187,46 +175,28 @@ When players join or leave:
 
 The workflow will push the updated mapping to Azure.
 
-## Local Development
-
-1. Copy the example settings file:
-   ```bash
-   cp local.settings.json.example local.settings.json
-   ```
-
-2. Edit `local.settings.json` with your actual values
-
-3. Install Azure Functions Core Tools: https://docs.microsoft.com/en-us/azure/azure-functions/functions-run-local
-
-4. Run locally:
-   ```bash
-   func start
-   ```
-
-5. Test with curl:
-   ```bash
-   curl -X POST "http://localhost:7071/api/pydt-webhook" \
-     -H "Content-Type: application/json" \
-     -d '{"gameName": "Test", "userName": "TestPlayer", "round": "1", "civName": "Rome", "leaderName": "Trajan"}'
-   ```
-
 ## Troubleshooting
+
+### Forgot your Function App name?
+
+```bash
+az functionapp list --resource-group pydt-bot-rg --query "[].name" -o tsv
+```
 
 ### Webhook not working
 
 1. Check the function is deployed:
    ```bash
-   az functionapp function list --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
+   az functionapp function list --name $FUNCTION_APP --resource-group pydt-bot-rg
    ```
 
-2. Check the logs:
-   ```bash
-   az functionapp log tail --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
-   ```
+2. Check the logs in the Azure Portal:
+   - Go to Azure Portal → Function App → **Functions** → **pydt_webhook** → **Monitor**
+   - Or: Function App → **Log stream** (may need to enable Application Insights first)
 
 3. Verify app settings are configured:
    ```bash
-   az functionapp config appsettings list --name $FUNCTION_APP --resource-group $RESOURCE_GROUP
+   az functionapp config appsettings list --name $FUNCTION_APP --resource-group pydt-bot-rg
    ```
 
 ### Discord mentions not working
