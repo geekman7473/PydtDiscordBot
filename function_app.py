@@ -21,8 +21,39 @@ ADMONISHMENTS = [
     "Plot twist: someone changed their Steam name. Change it back or face mild inconvenience.",
 ]
 
+# Required fields that PYDT must send
+REQUIRED_FIELDS = ["gameName", "userName", "round"]
 
-@app.route("pydt-webhook", methods=["POST"])
+
+def validate_pydt_payload(data: dict) -> tuple[bool, str]:
+    """Validate that the request looks like a legitimate PYDT webhook."""
+    if not data:
+        return False, "Empty payload"
+
+    # Check required fields are present and non-empty
+    for field in REQUIRED_FIELDS:
+        value = data.get(field)
+        if not value or (isinstance(value, str) and not value.strip()):
+            return False, f"Missing or empty required field: {field}"
+
+    # Basic sanity checks
+    try:
+        round_val = int(data.get("round", 0))
+        if round_val < 0 or round_val > 10000:
+            return False, "Invalid round number"
+    except (ValueError, TypeError):
+        return False, "Round must be a number"
+
+    # Check gameName and userName aren't suspiciously long (prevent abuse)
+    if len(str(data.get("gameName", ""))) > 200:
+        return False, "Game name too long"
+    if len(str(data.get("userName", ""))) > 100:
+        return False, "Username too long"
+
+    return True, ""
+
+
+@app.route("pydt-webhook", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def pydt_webhook(req: func.HttpRequest) -> func.HttpResponse:
     """
     Receives webhook from PYDT (Play Your Damn Turn) and posts to Discord.
@@ -46,6 +77,16 @@ def pydt_webhook(req: func.HttpRequest) -> func.HttpResponse:
                 "civName": req.form.get("civName"),
                 "leaderName": req.form.get("leaderName"),
             }
+
+        # Validate the payload looks like a real PYDT webhook
+        is_valid, error_msg = validate_pydt_payload(data)
+        if not is_valid:
+            logging.warning(f"Invalid PYDT payload: {error_msg}")
+            return func.HttpResponse(
+                json.dumps({"error": "Invalid request"}),
+                status_code=400,
+                mimetype="application/json"
+            )
 
         game_name = data.get("gameName", "Unknown Game")
         steam_username = data.get("userName", "Unknown Player")
@@ -128,7 +169,7 @@ def pydt_webhook(req: func.HttpRequest) -> func.HttpResponse:
         )
 
 
-@app.route("health", methods=["GET"])
+@app.route("health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def health_check(req: func.HttpRequest) -> func.HttpResponse:
     """Simple health check endpoint."""
     return func.HttpResponse(
