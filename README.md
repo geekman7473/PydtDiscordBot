@@ -8,9 +8,7 @@ When PYDT detects a new turn, it sends a webhook to this Azure Function, which p
 
 - Receives PYDT webhooks and posts to Discord
 - Maps Steam usernames to Discord user IDs for @mentions
-- **Tracks active games and whose turn it is** in Azure Table Storage
-- **Sends snarky reminder messages every 2 hours** until the player takes their turn
-- Falls back to displaying Steam username if no mapping exists
+- Sends periodic reminders until the player takes their turn
 - Runs on Azure Functions (essentially free for this use case)
 - CI/CD via GitHub Actions
 
@@ -145,16 +143,7 @@ git push
 
 Monitor the deployment in your repo's **Actions** tab.
 
-### 7. Enable Table Storage (for Turn Reminders)
-
-The bot uses Azure Table Storage to track active games and send reminders. This uses the same storage account created in step 2, so **no additional setup is required** - it works automatically!
-
-The bot will:
-- Create an `activegames` table automatically on first use
-- Track whose turn it is in each game
-- Send snarky reminders every 2 hours until the turn is taken
-
-### 8. Configure PYDT
+### 7. Configure PYDT
 
 1. Go to [playyourdamnturn.com](https://www.playyourdamnturn.com/)
 2. Open your game → **Edit Game** (or game settings)
@@ -165,7 +154,7 @@ The bot will:
    ```
 5. Save the settings
 
-### 9. Test It
+### 8. Test It
 
 Take a turn in your Civ game and upload it to PYDT. The next player should receive a Discord notification!
 
@@ -183,13 +172,6 @@ To check active games being tracked:
 curl "https://$FUNCTION_APP.azurewebsites.net/api/active-games"
 ```
 
-## How Turn Reminders Work
-
-1. When PYDT sends a webhook, the bot records whose turn it is in Azure Table Storage
-2. Every 15 minutes, a timer trigger checks all active games
-3. If a turn has been pending for 2+ hours, the bot sends a snarky reminder to Discord
-4. Reminders continue every 15 minutes (while turn is pending 2+ hours) until the turn is taken
-5. Each reminder includes how long the turn has been waiting and a reminder count
 
 ### Blackout Period
 
