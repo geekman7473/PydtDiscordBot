@@ -19,7 +19,8 @@ except Exception as e:
     logging.warning(f"Could not load config.json, using defaults: {e}")
     CONFIG = {
         "blackout": {"enabled": True, "startHour": 0, "endHour": 7, "gmtOffset": -5},
-        "reminderThresholdHours": 2
+        "reminderThresholdHours": 2,
+        "reminderIntervalHours": 2
     }
 
 
@@ -458,8 +459,9 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
                 if last_reminder_at:
                     last_reminder = datetime.fromisoformat(last_reminder_at.replace('Z', '+00:00'))
                     hours_since_last_reminder = (now - last_reminder).total_seconds() / 3600
-                    if hours_since_last_reminder < reminder_threshold:
-                        logging.info(f"Skipping reminder for {game_name} - only {hours_since_last_reminder:.1f} hours since last reminder (threshold: {reminder_threshold}h)")
+                    reminder_interval = CONFIG.get("reminderIntervalHours", 2)
+                    if hours_since_last_reminder < reminder_interval:
+                        logging.info(f"Skipping reminder for {game_name} - only {hours_since_last_reminder:.1f} hours since last reminder (interval: {reminder_interval}h)")
                         continue
                 
                 # Pick a snarky reminder

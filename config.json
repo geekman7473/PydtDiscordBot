@@ -1,0 +1,10 @@
+{
+    "blackout": {
+        "enabled": true,
+        "startHour": 0,
+        "endHour": 7,
+        "gmtOffset": -5
+    },
+    "reminderThresholdHours": 2,
+    "reminderIntervalHours": 2
+}
