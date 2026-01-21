@@ -83,23 +83,32 @@ ADMONISHMENTS = [
 REQUIRED_FIELDS = ["gameName", "userName", "round"]
 
 
-def get_table_client() -> TableClient:
-    """Get or create the Azure Table Storage client for tracking turns."""
+def get_storage_connection_string() -> str:
+    """Get the Azure Storage connection string."""
     connection_string = os.environ.get("AzureWebJobsStorage")
     if not connection_string or connection_string == "UseDevelopmentStorage=true":
         # For local development, use Azurite
         connection_string = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;TableEndpoint=http://127.0.0.1:10002/devstoreaccount1;"
-    
+    return connection_string
+
+
+def get_table_client(table_name: str = "activegames") -> TableClient:
+    """Get or create an Azure Table Storage client."""
+    connection_string = get_storage_connection_string()
     table_service = TableServiceClient.from_connection_string(connection_string)
-    table_name = "activegames"
     
     # Create table if it doesn't exist
     try:
         table_service.create_table_if_not_exists(table_name)
     except Exception as e:
-        logging.warning(f"Could not create table (may already exist): {e}")
+        logging.warning(f"Could not create table {table_name} (may already exist): {e}")
     
     return table_service.get_table_client(table_name)
+
+
+def get_turn_history_client() -> TableClient:
+    """Get the table client for turn history."""
+    return get_table_client("turnhistory")
 
 
 def sanitize_key(value: str) -> str:
@@ -111,14 +120,89 @@ def sanitize_key(value: str) -> str:
     return sanitized[:1024]  # Max key length is 1KB
 
 
+def record_turn_completion(game_id: str, game_name: str, previous_player: str, previous_round: str, turn_started_at: str):
+    """
+    Record the completed turn duration in turn history.
+    Called when a new webhook indicates someone else's turn has started.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        
+        # Calculate duration in seconds
+        if turn_started_at:
+            try:
+                start_time = datetime.fromisoformat(turn_started_at.replace('Z', '+00:00'))
+                duration_seconds = int((now - start_time).total_seconds())
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Could not parse turn start time: {e}")
+                duration_seconds = -1  # Unknown duration
+        else:
+            duration_seconds = -1  # Unknown duration
+        
+        history_client = get_turn_history_client()
+        
+        # PartitionKey: game identifier, RowKey: round_player for uniqueness
+        game_key = sanitize_key(game_id if game_id else game_name)
+        row_key = sanitize_key(f"{previous_round}_{previous_player}")
+        
+        entity = {
+            "PartitionKey": game_key,
+            "RowKey": row_key,
+            "gameName": game_name,
+            "gameId": game_id or "",
+            "steamUsername": previous_player,
+            "roundNumber": str(previous_round),
+            "turnStartedAt": turn_started_at or "",
+            "turnCompletedAt": now.isoformat(),
+            "durationSeconds": duration_seconds
+        }
+        
+        history_client.upsert_entity(entity)
+        
+        if duration_seconds >= 0:
+            hours = duration_seconds // 3600
+            minutes = (duration_seconds % 3600) // 60
+            logging.info(f"Recorded turn completion for {previous_player} in '{game_name}' (Round {previous_round}): {hours}h {minutes}m")
+        else:
+            logging.info(f"Recorded turn completion for {previous_player} in '{game_name}' (Round {previous_round}): duration unknown")
+            
+    except Exception as e:
+        logging.error(f"Failed to record turn completion: {e}")
+
+
 def update_turn_tracking(game_name: str, game_id: str, steam_username: str, discord_user_id: str, round_num: str):
-    """Update or create a record tracking whose turn it is in a game."""
+    """
+    Update or create a record tracking whose turn it is in a game.
+    Also records the previous turn's duration if there was a previous turn.
+    """
     try:
         table_client = get_table_client()
         
         # Use game_id if available, otherwise use sanitized game_name
         row_key = sanitize_key(game_id if game_id else game_name)
         
+        # Try to get the existing record to close out the previous turn
+        try:
+            existing = table_client.get_entity("activegames", row_key)
+            previous_player = existing.get("steamUsername", "")
+            previous_round = existing.get("roundNumber", "")
+            previous_turn_started = existing.get("turnStartedAt", "")
+            
+            # Only record if this is actually a different turn (different player or round)
+            if previous_player and (previous_player != steam_username or previous_round != str(round_num)):
+                record_turn_completion(
+                    game_id=game_id,
+                    game_name=game_name,
+                    previous_player=previous_player,
+                    previous_round=previous_round,
+                    turn_started_at=previous_turn_started
+                )
+        except Exception:
+            # No existing record - this is the first time we're seeing this game
+            # That's fine, we just can't record the previous turn's duration
+            logging.info(f"First webhook received for game '{game_name}' - no previous turn to record")
+        
+        # Now update with the new turn info
         entity = {
             "PartitionKey": "activegames",
             "RowKey": row_key,
