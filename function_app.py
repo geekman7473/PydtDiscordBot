@@ -452,6 +452,15 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
                 if hours_waiting < reminder_threshold:
                     logging.info(f"Skipping reminder for {game_name} - only {hours_waiting:.1f} hours elapsed (threshold: {reminder_threshold}h)")
                     continue
+
+                # Check if enough time has passed since the last reminder
+                last_reminder_at = entity.get("lastReminderAt", "")
+                if last_reminder_at:
+                    last_reminder = datetime.fromisoformat(last_reminder_at.replace('Z', '+00:00'))
+                    hours_since_last_reminder = (now - last_reminder).total_seconds() / 3600
+                    if hours_since_last_reminder < reminder_threshold:
+                        logging.info(f"Skipping reminder for {game_name} - only {hours_since_last_reminder:.1f} hours since last reminder (threshold: {reminder_threshold}h)")
+                        continue
                 
                 # Pick a snarky reminder
                 snark = random.choice(SNARKY_REMINDERS)
