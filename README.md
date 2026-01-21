@@ -8,6 +8,8 @@ When PYDT detects a new turn, it sends a webhook to this Azure Function, which p
 
 - Receives PYDT webhooks and posts to Discord
 - Maps Steam usernames to Discord user IDs for @mentions
+- **Tracks active games and whose turn it is** in Azure Table Storage
+- **Sends snarky reminder messages every 2 hours** until the player takes their turn
 - Falls back to displaying Steam username if no mapping exists
 - Runs on Azure Functions (essentially free for this use case)
 - CI/CD via GitHub Actions
@@ -143,7 +145,16 @@ git push
 
 Monitor the deployment in your repo's **Actions** tab.
 
-### 7. Configure PYDT
+### 7. Enable Table Storage (for Turn Reminders)
+
+The bot uses Azure Table Storage to track active games and send reminders. This uses the same storage account created in step 2, so **no additional setup is required** - it works automatically!
+
+The bot will:
+- Create an `activegames` table automatically on first use
+- Track whose turn it is in each game
+- Send snarky reminders every 2 hours until the turn is taken
+
+### 8. Configure PYDT
 
 1. Go to [playyourdamnturn.com](https://www.playyourdamnturn.com/)
 2. Open your game → **Edit Game** (or game settings)
@@ -154,7 +165,7 @@ Monitor the deployment in your repo's **Actions** tab.
    ```
 5. Save the settings
 
-### 8. Test It
+### 9. Test It
 
 Take a turn in your Civ game and upload it to PYDT. The next player should receive a Discord notification!
 
@@ -165,6 +176,48 @@ curl -X POST "https://$FUNCTION_APP.azurewebsites.net/api/pydt-webhook" \
   -H "Content-Type: application/json" \
   -d '{"gameName": "Test Game", "userName": "SteamPlayer1", "round": "42", "civName": "America", "leaderName": "Teddy Roosevelt"}'
 ```
+
+To check active games being tracked:
+
+```bash
+curl "https://$FUNCTION_APP.azurewebsites.net/api/active-games"
+```
+
+## How Turn Reminders Work
+
+1. When PYDT sends a webhook, the bot records whose turn it is in Azure Table Storage
+2. Every 15 minutes, a timer trigger checks all active games
+3. If a turn has been pending for 2+ hours, the bot sends a snarky reminder to Discord
+4. Reminders continue every 15 minutes (while turn is pending 2+ hours) until the turn is taken
+5. Each reminder includes how long the turn has been waiting and a reminder count
+
+### Blackout Period
+
+Reminders are **not sent during configured quiet hours** to avoid waking people up at night. By default, no reminders are sent between **midnight and 7am Eastern time (GMT-5)**.
+
+You can customize this in `config.json`:
+
+```json
+{
+  "blackout": {
+    "enabled": true,
+    "startHour": 0,
+    "endHour": 7,
+    "gmtOffset": -5
+  },
+  "reminderThresholdHours": 2
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Set to `false` to disable blackout (reminders 24/7) |
+| `startHour` | Hour when blackout starts (0-23, in local timezone) |
+| `endHour` | Hour when blackout ends (0-23, in local timezone) |
+| `gmtOffset` | Timezone offset from GMT (e.g., -5 for Eastern, -8 for Pacific) |
+| `reminderThresholdHours` | How long a turn must be pending before reminders start |
+
+> **Note:** Daylight saving time is not handled automatically. Adjust `gmtOffset` manually if needed (e.g., -4 for EDT, -5 for EST).
 
 ## Updating User Mappings
 

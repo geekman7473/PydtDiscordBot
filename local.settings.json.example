@@ -7,3 +7,8 @@
     "USER_MAPPING": "{\"SteamUsername1\": \"123456789012345678\", \"SteamUsername2\": \"234567890123456789\"}"
   }
 }
+
+# NOTE: For local development with turn reminders, you need Azurite running for Table Storage.
+# Install: npm install -g azurite
+# Run: azurite --silent --location ./azurite-data --debug ./azurite-debug.log
+# The "UseDevelopmentStorage=true" setting will connect to Azurite automatically.
