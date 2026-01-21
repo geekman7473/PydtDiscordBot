@@ -6,5 +6,5 @@
         "gmtOffset": -5
     },
     "reminderThresholdHours": 2,
-    "reminderIntervalHours": 2
+    "reminderIntervalHours": 3
 }
