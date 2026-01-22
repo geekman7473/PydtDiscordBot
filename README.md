@@ -7,7 +7,7 @@ When PYDT detects a new turn, it sends a webhook to this Azure Function, which p
 ## Features
 
 - Receives PYDT webhooks and posts to Discord
-- Maps Steam usernames to Discord user IDs for @mentions
+- Maps Steam64 IDs to Discord user IDs for @mentions
 - Sends periodic reminders until the player takes their turn
 - Runs on Azure Functions (essentially free for this use case)
 - CI/CD via GitHub Actions
@@ -81,27 +81,36 @@ echo "Your webhook URL will be: https://$FUNCTION_APP.azurewebsites.net/api/pydt
 5. Name it something like "PYDT Turn Bot"
 6. Click **Copy Webhook URL** and save it for later
 
-### 4. Get Discord User IDs
+### 4. Generate Player Mappings
 
-You need each player's Discord user ID to enable @mentions.
+Use the included setup script to automatically fetch players from your PYDT game and create the Steam64 ID → Discord ID mappings.
 
-1. In Discord, go to **User Settings** → **Advanced** → Enable **Developer Mode**
-2. Right-click each player's name → **Copy User ID**
-3. Create a JSON mapping of Steam usernames to Discord IDs:
+**Prerequisites:**
+- Enable **Developer Mode** in Discord: User Settings → Advanced → Developer Mode
+- This lets you right-click users to copy their Discord ID
 
-```json
-{
-  "SteamPlayer1": "123456789012345678",
-  "SteamPlayer2": "234567890123456789",
-  "AnotherPlayer": "345678901234567890"
-}
+**Run the setup script:**
+
+```powershell
+# Using the game URL
+.\setup-mappings.ps1 "https://www.playyourdamnturn.com/game/YOUR-GAME-ID"
+
+# Or just the game ID
+.\setup-mappings.ps1 "YOUR-GAME-ID"
 ```
 
-> **Tip:** Steam usernames are what PYDT shows for each player. Check your PYDT game page to see the exact usernames.
+The script will:
+1. Fetch all players from your PYDT game
+2. Look up each player's Steam username
+3. Prompt you to enter each player's Discord ID
+4. Save the mapping to `mappings.json`
+5. Optionally update the GitHub secret automatically
+
+> **Note:** If a player's Discord ID is left empty, the bot will fall back to using their PYDT username instead of an @mention, with a warning that the mapping is incomplete.
 
 ### 5. Configure GitHub Secrets
 
-You need to add four secrets to your GitHub repository.
+You need to add four secrets to your GitHub repository. If you used the setup script and chose to update the GitHub secret, `USER_MAPPING_JSON` is already configured.
 
 #### Option A: Using GitHub CLI
 
@@ -112,8 +121,8 @@ gh secret set AZURE_FUNCTIONAPP_NAME --body "pydt-discord-bot-1234567890"
 # Set Discord webhook URL
 gh secret set DISCORD_WEBHOOK_URL --body "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
 
-# Set user mapping (use single quotes to preserve JSON)
-gh secret set USER_MAPPING_JSON --body '{"SteamPlayer1": "123456789012345678", "SteamPlayer2": "234567890123456789"}'
+# Set user mapping (if not already set by setup-mappings.ps1)
+gh secret set USER_MAPPING_JSON --body '{"76561198012345678": "123456789012345678", "76561198023456789": "234567890123456789"}'
 
 # Set Azure credentials (paste the JSON from step 2 when prompted, then Ctrl+D)
 gh secret set AZURE_CREDENTIALS
@@ -128,7 +137,7 @@ gh secret set AZURE_CREDENTIALS
 |-------------|-------|
 | `AZURE_FUNCTIONAPP_NAME` | Your function app name from step 2 |
 | `DISCORD_WEBHOOK_URL` | Your Discord webhook URL from step 3 |
-| `USER_MAPPING_JSON` | Your JSON mapping from step 4 |
+| `USER_MAPPING_JSON` | Contents of `mappings.json` from step 4 |
 | `AZURE_CREDENTIALS` | The entire JSON output from step 2 |
 
 ### 6. Deploy
@@ -163,7 +172,7 @@ You can also test manually:
 ```bash
 curl -X POST "https://$FUNCTION_APP.azurewebsites.net/api/pydt-webhook" \
   -H "Content-Type: application/json" \
-  -d '{"gameName": "Test Game", "userName": "SteamPlayer1", "round": "42", "civName": "America", "leaderName": "Teddy Roosevelt"}'
+  -d '{"gameName": "Test Game", "userName": "SteamPlayer1", "steamId": "76561198012345678", "round": "42", "civName": "America", "leaderName": "Teddy Roosevelt"}'
 ```
 
 To check active games being tracked:
@@ -203,12 +212,15 @@ You can customize this in `config.json`:
 
 ## Updating User Mappings
 
-When players join or leave:
+When players join or leave, re-run the setup script:
 
-1. Update the `USER_MAPPING_JSON` secret in GitHub (Settings → Secrets → Actions)
-2. Go to Actions → "Deploy to Azure Functions" → Run workflow → Run workflow
+```powershell
+.\setup-mappings.ps1 "YOUR-GAME-ID"
+```
 
-The workflow will push the updated mapping to Azure.
+The script will prompt you for Discord IDs and offer to update the GitHub secret automatically.
+
+Alternatively, manually update the `USER_MAPPING_JSON` secret in GitHub and trigger a deployment.
 
 ## Troubleshooting
 
@@ -237,8 +249,8 @@ az functionapp list --resource-group pydt-bot-rg --query "[].name" -o tsv
 ### Discord mentions not working
 
 - Verify the Discord user ID is correct (18-digit number)
-- Make sure the Steam username in the mapping matches exactly what PYDT sends
-- Check the function logs for "No Discord mapping found" warnings
+- Make sure the Steam64 ID in the mapping is correct (17-digit number like `76561198012345678`)
+- Check the function logs for "No Discord ID configured" warnings
 
 ### GitHub Actions failing
 
@@ -247,9 +259,7 @@ az functionapp list --resource-group pydt-bot-rg --query "[].name" -o tsv
 
 ## Cost
 
-- **Azure Functions Consumption Plan:** First 1 million executions/month free
-- **Storage Account:** ~$0.01-0.05/month
-- **Total:** Essentially free for typical Civ game usage
+- **Azure Functions Flex Consumption Plan:** First 250k executions/month free
 
 ## License
 

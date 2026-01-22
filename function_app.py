@@ -66,20 +66,6 @@ SNARKY_REMINDERS = [
     "Your turn has been waiting so long it's started collecting dust. Digital dust. That's how long.",
 ]
 
-# Admonishments for users who change their Steam name
-ADMONISHMENTS = [
-    "Whoever you are, change your Steam name back. We're not playing guess who here.",
-    "Someone changed their Steam name and now I look like an idiot. Thanks for that.",
-    "I don't know who you are, but I will find you, and I will ping you. Change your name back.",
-    "Congratulations on your new identity. Now change it back so I can do my job.",
-    "This is why we can't have nice things. Change your Steam name back.",
-    "I'm a simple bot with simple needs. Please don't make my life harder than it needs to be.",
-    "Your new Steam name is very cool. I'm sure it was worth confusing everyone. Change it back.",
-    "I'm not mad, I'm just disappointed. And also mad. Change your name back.",
-    "Did you think I wouldn't notice? I notice everything. Except your new name, apparently.",
-    "Plot twist: someone changed their Steam name. Change it back or face mild inconvenience.",
-]
-
 # Required fields that PYDT must send
 REQUIRED_FIELDS = ["gameName", "userName", "round"]
 
@@ -171,24 +157,24 @@ def record_turn_completion(game_id: str, game_name: str, previous_player: str, p
         logging.error(f"Failed to record turn completion: {e}")
 
 
-def update_turn_tracking(game_name: str, game_id: str, steam_username: str, discord_user_id: str, round_num: str):
+def update_turn_tracking(game_name: str, game_id: str, steam_username: str, steam_id: str, discord_user_id: str, round_num: str):
     """
     Update or create a record tracking whose turn it is in a game.
     Also records the previous turn's duration if there was a previous turn.
     """
     try:
         table_client = get_table_client()
-        
+
         # Use game_id if available, otherwise use sanitized game_name
         row_key = sanitize_key(game_id if game_id else game_name)
-        
+
         # Try to get the existing record to close out the previous turn
         try:
             existing = table_client.get_entity("activegames", row_key)
             previous_player = existing.get("steamUsername", "")
             previous_round = existing.get("roundNumber", "")
             previous_turn_started = existing.get("turnStartedAt", "")
-            
+
             # Only record if this is actually a different turn (different player or round)
             if previous_player and (previous_player != steam_username or previous_round != str(round_num)):
                 record_turn_completion(
@@ -202,7 +188,7 @@ def update_turn_tracking(game_name: str, game_id: str, steam_username: str, disc
             # No existing record - this is the first time we're seeing this game
             # That's fine, we just can't record the previous turn's duration
             logging.info(f"First webhook received for game '{game_name}' - no previous turn to record")
-        
+
         # Now update with the new turn info
         entity = {
             "PartitionKey": "activegames",
@@ -210,16 +196,17 @@ def update_turn_tracking(game_name: str, game_id: str, steam_username: str, disc
             "gameName": game_name,
             "gameId": game_id or "",
             "steamUsername": steam_username,
+            "steamId": steam_id or "",
             "discordUserId": discord_user_id or "",
             "roundNumber": str(round_num),
             "turnStartedAt": datetime.now(timezone.utc).isoformat(),
             "lastReminderAt": "",
             "reminderCount": 0
         }
-        
+
         table_client.upsert_entity(entity)
         logging.info(f"Updated turn tracking for game '{game_name}': {steam_username}'s turn")
-        
+
     except Exception as e:
         logging.error(f"Failed to update turn tracking: {e}")
 
@@ -285,6 +272,7 @@ def pydt_webhook(req: func.HttpRequest) -> func.HttpResponse:
             data = {
                 "gameName": req.form.get("gameName"),
                 "userName": req.form.get("userName"),
+                "steamId": req.form.get("steamId"),
                 "round": req.form.get("round"),
                 "civName": req.form.get("civName"),
                 "leaderName": req.form.get("leaderName"),
@@ -302,14 +290,15 @@ def pydt_webhook(req: func.HttpRequest) -> func.HttpResponse:
 
         game_name = data.get("gameName", "Unknown Game")
         steam_username = data.get("userName", "Unknown Player")
+        steam_id = data.get("steamId", "")  # Steam64 ID from PYDT webhook
         round_num = data.get("round", "?")
         civ_name = data.get("civName", "Unknown Civ")
         leader_name = data.get("leaderName", "Unknown Leader")
         game_id = data.get("gameId", "")  # PYDT may send this
 
-        logging.info(f"Turn notification: {steam_username} in {game_name} (Round {round_num})")
+        logging.info(f"Turn notification: {steam_username} (Steam64: {steam_id}) in {game_name} (Round {round_num})")
 
-        # Load user mapping from environment variable
+        # Load user mapping from environment variable (steam64Id -> discordId)
         user_mapping_json = os.environ.get("USER_MAPPING", "{}")
         try:
             user_mapping = json.loads(user_mapping_json)
@@ -317,21 +306,21 @@ def pydt_webhook(req: func.HttpRequest) -> func.HttpResponse:
             logging.error("Failed to parse USER_MAPPING JSON")
             user_mapping = {}
 
-        # Look up Discord user ID
-        discord_user_id = user_mapping.get(steam_username)
+        # Look up Discord user ID by Steam64 ID
+        discord_user_id = user_mapping.get(steam_id, "") if steam_id else ""
 
         # Track this turn in storage for reminders
-        update_turn_tracking(game_name, game_id, steam_username, discord_user_id, round_num)
+        update_turn_tracking(game_name, game_id, steam_username, steam_id, discord_user_id, round_num)
 
         # Format the message
         if discord_user_id:
             message = f"<@{discord_user_id}> - Your turn in \"{game_name}\" (Round {round_num}) as {leader_name} of {civ_name}"
         else:
-            logging.warning(f"No Discord mapping found for Steam user: {steam_username}")
-            admonishment = random.choice(ADMONISHMENTS)
+            # Fallback to PYDT username when Discord ID mapping is missing
+            logging.warning(f"No Discord ID configured for Steam64 ID: {steam_id} ({steam_username})")
             message = (
-                f"@everyone - It's \"{steam_username}\"'s turn in \"{game_name}\" (Round {round_num}) as {leader_name} of {civ_name}\n\n"
-                f"{admonishment}"
+                f"**{steam_username}** - Your turn in \"{game_name}\" (Round {round_num}) as {leader_name} of {civ_name}\n\n"
+                f"⚠️ *No Discord mapping configured for this player.*"
             )
 
         # Post to Discord
@@ -419,7 +408,7 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
             logging.error("DISCORD_WEBHOOK_URL not configured - cannot send reminders")
             return
         
-        # Load user mapping for fallback lookups
+        # Load user mapping for fallback lookups (steam64Id -> discordId)
         user_mapping_json = os.environ.get("USER_MAPPING", "{}")
         try:
             user_mapping = json.loads(user_mapping_json)
@@ -436,18 +425,19 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
             try:
                 game_name = entity.get("gameName", "Unknown Game")
                 steam_username = entity.get("steamUsername", "Unknown Player")
+                steam_id = entity.get("steamId", "")
                 discord_user_id = entity.get("discordUserId", "")
                 round_num = entity.get("roundNumber", "?")
                 turn_started_at = entity.get("turnStartedAt", "")
                 reminder_count = entity.get("reminderCount", 0)
-                
+
                 # Parse when the turn started
                 if turn_started_at:
                     turn_start = datetime.fromisoformat(turn_started_at.replace('Z', '+00:00'))
                     hours_waiting = (now - turn_start).total_seconds() / 3600
                 else:
                     hours_waiting = 0
-                
+
                 # Only send reminder if turn has been pending for at least the threshold
                 reminder_threshold = CONFIG.get("reminderThresholdHours", 2)
                 if hours_waiting < reminder_threshold:
@@ -463,20 +453,21 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
                     if hours_since_last_reminder < reminder_interval:
                         logging.info(f"Skipping reminder for {game_name} - only {hours_since_last_reminder:.1f} hours since last reminder (interval: {reminder_interval}h)")
                         continue
-                
+
                 # Pick a snarky reminder
                 snark = random.choice(SNARKY_REMINDERS)
-                
+
                 # Format the reminder message
                 if discord_user_id:
                     message = f"⏰ <@{discord_user_id}> - Reminder #{reminder_count + 1}: Your turn in \"{game_name}\" (Round {round_num}) has been waiting for {hours_waiting:.1f} hours.\n\n{snark}"
                 else:
-                    # Try to look up the Discord ID again in case mapping was updated
-                    discord_user_id = user_mapping.get(steam_username, "")
+                    # Try to look up the Discord ID again by Steam64 ID in case mapping was updated
+                    discord_user_id = user_mapping.get(steam_id, "") if steam_id else ""
                     if discord_user_id:
                         message = f"⏰ <@{discord_user_id}> - Reminder #{reminder_count + 1}: Your turn in \"{game_name}\" (Round {round_num}) has been waiting for {hours_waiting:.1f} hours.\n\n{snark}"
                     else:
-                        message = f"⏰ @everyone - Reminder #{reminder_count + 1}: **{steam_username}**'s turn in \"{game_name}\" (Round {round_num}) has been waiting for {hours_waiting:.1f} hours.\n\n{snark}"
+                        # Fallback to PYDT username when Discord ID mapping is missing
+                        message = f"⏰ **{steam_username}** - Reminder #{reminder_count + 1}: Your turn in \"{game_name}\" (Round {round_num}) has been waiting for {hours_waiting:.1f} hours.\n\n{snark}\n\n⚠️ *No Discord mapping configured for this player.*"
                 
                 # Send the reminder to Discord
                 discord_payload = {"content": message}
