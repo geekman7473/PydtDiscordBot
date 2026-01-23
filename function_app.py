@@ -72,11 +72,7 @@ REQUIRED_FIELDS = ["gameName", "userName", "round"]
 
 def get_storage_connection_string() -> str:
     """Get the Azure Storage connection string."""
-    connection_string = os.environ.get("AzureWebJobsStorage")
-    if not connection_string or connection_string == "UseDevelopmentStorage=true":
-        # For local development, use Azurite
-        connection_string = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;TableEndpoint=http://127.0.0.1:10002/devstoreaccount1;"
-    return connection_string
+    return os.environ.get("AzureWebJobsStorage", "")
 
 
 def get_table_client(table_name: str = "activegames") -> TableClient:

@@ -37,7 +37,7 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Create deployment package
-        run: zip -r deploy.zip . -x '.git/*' -x '.github/*' -x '*.md' -x 'local.settings.json*'
+        run: zip -r deploy.zip . -x '.git/*' -x '.github/*' -x '*.md'
 
       - name: Deploy to Azure Functions
         run: az functionapp deployment source config-zip --resource-group pydt-bot-rg --name ${{ secrets.AZURE_FUNCTIONAPP_NAME }} --src deploy.zip

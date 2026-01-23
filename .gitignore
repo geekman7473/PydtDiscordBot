@@ -1,7 +1,6 @@
 mappings.json
 
 # Azure Functions
-local.settings.json
 .python_packages/
 
 # Python
