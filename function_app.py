@@ -47,43 +47,97 @@ def is_blackout_period() -> bool:
         # Wraps around midnight: e.g., 22-6 (10pm to 6am)
         return current_hour >= start_hour or current_hour < end_hour
 
-# Snarky reminders for people taking too long on their turn
-SNARKY_REMINDERS = [
+# Reminder messages organized by intensity level
+# LOW: Polite reminders for the first few hours
+# MEDIUM: Snarky but friendly reminders
+# HIGH: Full snark for extended delays
+
+LOW_INTENSITY_REMINDERS = [
+    "Oh hey, your turn exists. Just thought you should know.",
+    "Your turn is ready. No pressure, but also... your turn is ready.",
+    "Ping! That's the sound of your turn waiting. Patiently. For now.",
+    "Just a casual reminder that the End Turn button misses you.",
+    "Your turn is still here. It's not going anywhere. Neither is the game, apparently.",
+    "Hey, remember Civ? Civ remembers you. Specifically, it remembers you owe it a turn.",
+    "Fun fact: You have a turn pending. Less fun fact: Still pending.",
+    "Your civilization is holding a 'Where's Our Leader?' meeting. Thought you'd want to know.",
+    "Not to be dramatic, but your turn has been sitting there. Just... sitting.",
+    "Quick update: Turn still pending. This has been your turn status report.",
+    "Your scouts report that it's your turn. They seem unsure what you're doing about it.",
+    "The game would like to inform you that your turn is ready. It asked nicely.",
+    "Breaking: Local turn remains untaken. Developing story.",
+    "Your citizens have started a casual inquiry into your whereabouts. Nothing serious. Yet.",
+    "Just popping in to say your turn is here. I'll see myself out.",
+    "Turn's up! No rush. Well, maybe a little rush. A micro-rush.",
+    "Your turn called. It didn't leave a message, but I think we both know what it wants.",
+    "Knock knock. Who's there? Your turn. Your turn who? Your turn to play.",
+    "I'm not saying your turn is lonely, but it did ask me to check on you.",
+    "Plot twist: You have a turn. The plot continues when you take it.",
+    "Your turn is like a fine wine. It's been sitting there. Waiting. Aging.",
+    "Hey! Your turn wanted me to tell you it's ready. I'm just the messenger.",
+    "Turns out (pun intended) it's your turn. I'll let you process that.",
+    "Your turn has been patiently waiting. I, however, am slightly less patient.",
+    "Just a little nudge. Consider this a turn-based poke.",
+    "Your move, literally. The game is waiting. Calmly. So calmly.",
+    "I don't want to alarm you, but there's a turn. And it's yours.",
+    "Your turn is pending. Think of this as a gentle, digital elbow nudge.",
+    "Hey there! The 'End Turn' button says hi. It's been a while since you visited.",
+    "Civilization update: Still waiting for their favorite leader to return.",
+    "Your turn awaits. No judgment here. Okay, maybe a little judgment.",
+    "The game misses you. The other players... also miss you. Coincidence?",
+    "Current status: Turn = Yours. Action required = Whenever you're ready. Ish.",
+    "This is your regularly scheduled turn reminder. We now return you to your day.",
+    "Your settlers are asking if they should just pick a spot themselves.",
+    "I come bearing news: It's your turn. I also come bearing mild impatience.",
+    "Your turn has been marked 'unread' for a while now. Just saying.",
+    "Pssst. Hey. You. Yeah, you. Turn's ready.",
+    "Your turn is giving me 'unread email from three days ago' energy.",
+    "The game is open. Your turn is ready. This is not a drill. (But it's also not urgent. Yet.)",
+]
+
+MEDIUM_INTENSITY_REMINDERS = [
     "Hey, remember that Civ game you're in? It remembers you. It's been waiting. Patiently. Unlike me.",
     "Just checking if you're still alive, because your turn certainly isn't progressing.",
-    "Fun fact: entire civilizations have risen and fallen in the time you've been 'thinking' about your turn.",
     "I'm not saying you're slow, but I've seen glaciers move faster. Take your turn.",
     "Your opponents have started a betting pool on whether you'll ever finish your turn. The odds aren't great.",
     "Legend has it, if you wait long enough, the turn will play itself. Spoiler: it won't. Take your turn.",
-    "I've sent this reminder before. I'll send it again. I have nothing but time. You, apparently, have nothing but excuses.",
     "The other players wanted me to tell you to hurry up. I wanted to tell you that too, but more sarcastically.",
     "Your Civ is starting to think you've abandoned them. Don't make me send a wellness check.",
     "Breaking news: Local player discovers 'taking your turn' is actually an option. More at 11.",
-    "Did you know your turn has been pending longer than some people's entire relationships? Take. Your. Turn.",
     "I'm starting to think you're not playing hard to get, you're just not playing at all.",
     "The game isn't going to play itself. Well, technically it could if you enabled AI, but that's not the point.",
     "Tick tock. That's not a clock, that's the sound of everyone's patience running out.",
     "Your turn has been waiting so long it's started collecting dust. Digital dust. That's how long.",
-    "Gandhi has mass-produced nukes in less time than you've spent on this turn.",
     "Your citizens are starting to ask if maybe they should just elect a new leader.",
+    "Even the barbarians are wondering what's taking so long.",
+    "Just one more turn? How about just ONE turn? Please?",
+    "Your trade routes have expired. Your alliances have crumbled. Your turn remains unplayed.",
+    "You know the 'One More Turn' button? It requires you to finish THIS turn first.",
+    "Roses are red, violets are blue, your turn's been pending, what else is new?",
+    "If procrastination were a tech, you'd have it fully boosted by now.",
+    "Your civ has so many unemployed citizens because even THEY'RE waiting for your turn.",
+    "At this point, your inaction counts as a policy decision.",
+    "Your turn has entered the chat. Your turn has left the chat. Your turn is still pending.",
+    "Your amenities are dropping because your citizens are bored of waiting.",
+    "Sir, this is a Wendy's. Also, take your turn.",
+]
+
+HIGH_INTENSITY_REMINDERS = [
+    "Fun fact: entire civilizations have risen and fallen in the time you've been 'thinking' about your turn.",
+    "I've sent this reminder before. I'll send it again. I have nothing but time. You, apparently, have nothing but excuses.",
+    "Did you know your turn has been pending longer than some people's entire relationships? Take. Your. Turn.",
+    "Gandhi has mass-produced nukes in less time than you've spent on this turn.",
     "I've seen people research the entire tech tree faster than you're taking this turn.",
     "At this rate, you'll achieve a Time Victory before you achieve 'clicking End Turn.'",
-    "Even the barbarians are wondering what's taking so long.",
     "Your scouts have returned, aged, retired, and their grandchildren are now scouts. Still waiting.",
     "Plot twist: the real Domination Victory was the turns we waited for along the way.",
     "If turns were a wonder, yours would be the Great Wait of China.",
-    "Just one more turn? How about just ONE turn? Please?",
-    "Your trade routes have expired. Your alliances have crumbled. Your turn remains unplayed.",
     "Somewhere, a Great General has earned enough points to spawn. You haven't earned enough points to click 'Next Turn.'",
     "I'm not saying you're slow, but your Civ just entered a Dark Age from lack of activity.",
     "The World Congress has convened specifically to discuss why you haven't taken your turn.",
     "Your spies have gathered intel, written reports, and retired. The intel? You still haven't moved.",
     "A settler could have founded a city, grown it to size 20, and built every wonder by now.",
-    "You know the 'One More Turn' button? It requires you to finish THIS turn first.",
     "Your opponents have researched Future Tech twelve times waiting for you.",
-    "Roses are red, violets are blue, your turn's been pending, what else is new?",
-    "If procrastination were a tech, you'd have it fully boosted by now.",
-    "Your civ has so many unemployed citizens because even THEY'RE waiting for your turn.",
     "Rome wasn't built in a day, but it fell faster than you're taking this turn.",
     "The Hundred Years' War was shorter than this wait. Take your turn.",
     "Napoleon conquered Europe in less time than you've been staring at this save file.",
@@ -91,11 +145,8 @@ SNARKY_REMINDERS = [
     "Historians will debate what you were doing during this turn for centuries.",
     "Your turn has been pending so long, it qualifies as a UNESCO World Heritage Site.",
     "The Manhattan Project had fewer delays than your turn.",
-    "At this point, your inaction counts as a policy decision.",
-    "Your turn has entered the chat. Your turn has left the chat. Your turn is still pending.",
     "I've started writing fan fiction about what your next move might be. Chapter 47 is getting interesting.",
     "The Bronze Age Collapse happened faster than this turn is progressing.",
-    "Your amenities are dropping because your citizens are bored of waiting.",
     "If this were a real civilization, there would have been three coups by now.",
     "Alexander the Great wept, for there were no more worlds to conquer. You weep because you can't click a button.",
     "This delay is longer than the list of Henry VIII's wives. And almost as tragic.",
@@ -107,7 +158,6 @@ SNARKY_REMINDERS = [
     "The fall of Constantinople was faster than this. The Ottomans are judging you.",
     "Your civ is in anarchy. Not because of government change, but because nobody's at the wheel.",
     "At this pace, heat death of the universe might be a legitimate victory condition.",
-    "Sir, this is a Wendy's. Also, take your turn.",
     "The Founding Fathers wrote the Constitution faster than you're taking this turn. And they had to use quills.",
     "Lewis and Clark crossed the entire continent and back. You can't cross the distance to your keyboard.",
     "The transcontinental railroad was completed faster than this turn. They had to lay track through mountains.",
@@ -139,6 +189,20 @@ SNARKY_REMINDERS = [
     "Tesla went from 'that might work' to mass production faster than you're clicking End Turn.",
     "The entire Bitcoin rollercoaster has happened multiple times waiting for your turn. We could've been rich. Or broke. Probably broke.",
 ]
+
+
+def get_reminder_by_intensity(hours_waiting: float) -> str:
+    """Select a reminder message based on how long the turn has been waiting."""
+    intensity_config = CONFIG.get("reminderIntensity", {})
+    low_max = intensity_config.get("lowMaxHours", 3)
+    medium_max = intensity_config.get("mediumMaxHours", 8)
+    
+    if hours_waiting <= low_max:
+        return random.choice(LOW_INTENSITY_REMINDERS)
+    elif hours_waiting <= medium_max:
+        return random.choice(MEDIUM_INTENSITY_REMINDERS)
+    else:
+        return random.choice(HIGH_INTENSITY_REMINDERS)
 
 # Required fields that PYDT must send
 REQUIRED_FIELDS = ["gameName", "userName", "round"]
@@ -524,8 +588,8 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
                         logging.info(f"Skipping reminder for {game_name} - only {hours_since_last_reminder:.1f} hours since last reminder (interval: {reminder_interval}h)")
                         continue
 
-                # Pick a snarky reminder
-                snark = random.choice(SNARKY_REMINDERS)
+                # Pick a reminder based on intensity level
+                snark = get_reminder_by_intensity(hours_waiting)
 
                 # Format the reminder message
                 if discord_user_id:

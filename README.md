@@ -210,6 +210,34 @@ You can customize this in `config.json`:
 
 > **Note:** Daylight saving time is not handled automatically. Adjust `gmtOffset` manually if needed (e.g., -4 for EDT, -5 for EST).
 
+### Reminder Intensity Levels
+
+Reminders escalate in snarkiness based on how long the turn has been pending. The bot uses three intensity levels:
+
+| Level | Default Hours | Tone |
+|-------|---------------|------|
+| **LOW** | 0-3 hours | Light, deadpan humor ("Oh hey, your turn exists. Just thought you should know.") |
+| **MEDIUM** | 3-8 hours | Snarky but playful ("Your opponents have started a betting pool on whether you'll ever finish your turn.") |
+| **HIGH** | 8+ hours | Full historical roasts ("Napoleon conquered Europe in less time than you've been staring at this save file.") |
+
+Configure the thresholds in `config.json`:
+
+```json
+{
+  "reminderIntensity": {
+    "lowMaxHours": 3,
+    "mediumMaxHours": 8
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `lowMaxHours` | Hours before escalating from LOW to MEDIUM intensity (default: 3) |
+| `mediumMaxHours` | Hours before escalating from MEDIUM to HIGH intensity (default: 8) |
+
+**Example:** To be more aggressive earlier, you could set `lowMaxHours: 1` and `mediumMaxHours: 4`.
+
 ## Updating User Mappings
 
 When players join or leave, re-run the setup script:
