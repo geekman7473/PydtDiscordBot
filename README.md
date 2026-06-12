@@ -9,6 +9,7 @@ When PYDT detects a new turn, it sends a webhook to this Azure Function, which p
 - Receives PYDT webhooks and posts to Discord
 - Maps Steam64 IDs to Discord user IDs for @mentions
 - Sends periodic reminders until the player takes their turn
+- Posts a weekly status report (fastest turn, play rate, and projected finish date)
 - Runs on Azure Functions (essentially free for this use case)
 - CI/CD via GitHub Actions
 
@@ -237,6 +238,72 @@ Configure the thresholds in `config.json`:
 | `mediumMaxHours` | Hours before escalating from MEDIUM to HIGH intensity (default: 8) |
 
 **Example:** To be more aggressive earlier, you could set `lowMaxHours: 1` and `mediumMaxHours: 4`.
+
+### Weekly Status Report
+
+Once a week the bot posts a status report to Discord that:
+
+- **Rewards the fastest turn** taken during the week (with an @mention).
+- Reports the week's **play rate in "turns/day"**, where one "turn" is a full round (every player gets to move).
+- Computes the **overall progression rate** since the game started and projects an **ETA for finishing the game**, using the public PYDT API.
+
+The report is posted **every Friday at 3:00 PM Pacific** (daylight saving time is handled automatically). All of the data comes from the anonymous PYDT API, so no extra credentials are required.
+
+Configure it in `config.json`:
+
+```json
+{
+  "weeklyStatus": {
+    "enabled": true,
+    "postHourPacific": 15,
+    "postWeekday": 4,
+    "autoDiscoverGames": true,
+    "gameIds": [],
+    "defaultTargetRounds": 500,
+    "gameSpeedTargetRounds": {
+      "GAMESPEED_ONLINE": 250,
+      "GAMESPEED_QUICK": 330,
+      "GAMESPEED_STANDARD": 500,
+      "GAMESPEED_EPIC": 750,
+      "GAMESPEED_MARATHON": 1500
+    }
+  }
+}
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Set to `false` to turn off the weekly report |
+| `postHourPacific` | Hour (0-23, Pacific) to post the report (default: 15 = 3 PM) |
+| `postWeekday` | Day to post (Mon=0 … Fri=4 … Sun=6; default: 4 = Friday) |
+| `autoDiscoverGames` | If no `gameIds` are set and no games are tracked yet, find the group's game from the mapped players |
+| `gameIds` | Optional list of PYDT game IDs to report on. Leave empty to use tracked/auto-discovered games |
+| `defaultTargetRounds` | Turn limit used for the ETA when the game speed isn't listed below |
+| `gameSpeedTargetRounds` | Civ 6 game-end turn per game speed (a PYDT "round" = the in-game Civ turn) |
+
+> **Note:** The ETA assumes the game runs to its turn limit for the configured game speed. A victory before then will, of course, finish it sooner.
+
+#### Previewing the report
+
+Before relying on the Friday auto-post, you can preview the exact message at any time.
+
+**On the deployed function** (no Discord post is made):
+
+```bash
+# All tracked / auto-discovered games
+curl "https://$FUNCTION_APP.azurewebsites.net/api/weekly-status-preview"
+
+# A specific game
+curl "https://$FUNCTION_APP.azurewebsites.net/api/weekly-status-preview?gameId=YOUR-GAME-ID"
+```
+
+**Locally** (only needs `requests` and `tzdata` from `requirements.txt`):
+
+```powershell
+python preview_weekly_status.py YOUR-GAME-ID
+# or, to auto-discover from mappings.json:
+python preview_weekly_status.py
+```
 
 ## Updating User Mappings
 

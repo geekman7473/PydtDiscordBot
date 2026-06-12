@@ -10,5 +10,20 @@
     "reminderIntensity": {
         "lowMaxHours": 3,
         "mediumMaxHours": 8
+    },
+    "weeklyStatus": {
+        "enabled": true,
+        "postHourPacific": 15,
+        "postWeekday": 4,
+        "autoDiscoverGames": true,
+        "gameIds": [],
+        "defaultTargetRounds": 500,
+        "gameSpeedTargetRounds": {
+            "GAMESPEED_ONLINE": 250,
+            "GAMESPEED_QUICK": 330,
+            "GAMESPEED_STANDARD": 500,
+            "GAMESPEED_EPIC": 750,
+            "GAMESPEED_MARATHON": 1500
+        }
     }
 }

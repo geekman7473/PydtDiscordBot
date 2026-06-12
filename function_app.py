@@ -8,6 +8,8 @@ import pathlib
 import random
 import requests
 
+import weekly_status as weekly
+
 app = func.FunctionApp()
 
 # Load configuration
@@ -503,6 +505,7 @@ def pydt_webhook(req: func.HttpRequest) -> func.HttpResponse:
                 "round": req.form.get("round"),
                 "civName": req.form.get("civName"),
                 "leaderName": req.form.get("leaderName"),
+                "gameId": req.form.get("gameId"),
             }
 
         # Validate the payload looks like a real PYDT webhook
@@ -749,4 +752,162 @@ def get_active_games(req: func.HttpRequest) -> func.HttpResponse:
             json.dumps({"error": str(e)}),
             status_code=500,
             mimetype="application/json"
+        )
+
+
+def _load_user_mapping() -> dict:
+    """Load the Steam64 ID -> Discord ID mapping from the environment."""
+    raw = os.environ.get("USER_MAPPING", "{}")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logging.error("Failed to parse USER_MAPPING JSON")
+        return {}
+
+
+def get_tracked_game_ids() -> list:
+    """
+    Determine which PYDT game IDs to include in the weekly status report.
+
+    Priority:
+      1. Explicit game IDs in config (weeklyStatus.gameIds).
+      2. Game IDs recorded in the active games table.
+      3. Auto-discovery from the mapped players' active games (fallback).
+    """
+    ids = []
+    seen = set()
+
+    def add(game_id):
+        if game_id and game_id not in seen:
+            seen.add(game_id)
+            ids.append(game_id)
+
+    ws_cfg = CONFIG.get("weeklyStatus", {})
+
+    for game_id in ws_cfg.get("gameIds", []) or []:
+        add(game_id)
+
+    try:
+        table_client = get_table_client()
+        for entity in table_client.list_entities():
+            add(entity.get("gameId"))
+    except Exception as exc:
+        logging.warning(f"Could not read tracked games from table: {exc}")
+
+    if not ids and ws_cfg.get("autoDiscoverGames", True):
+        user_mapping = _load_user_mapping()
+        if user_mapping:
+            for game_id in weekly.discover_game_ids_for_steam_ids(list(user_mapping.keys())):
+                add(game_id)
+
+    return ids
+
+
+def generate_weekly_status_messages(now=None, explicit_game_ids=None) -> list:
+    """Build the weekly status report(s). Does not post anything to Discord."""
+    now = now or datetime.now(timezone.utc)
+    user_mapping = _load_user_mapping()
+    game_ids = explicit_game_ids if explicit_game_ids else get_tracked_game_ids()
+
+    reports = []
+    for game_id in game_ids:
+        try:
+            reports.append(weekly.build_status_for_game(game_id, now, user_mapping, CONFIG))
+        except Exception as exc:
+            logging.error(f"Failed to build weekly status for game {game_id}: {exc}")
+    return reports
+
+
+@app.timer_trigger(schedule="0 0 22,23 * * 5", arg_name="timer", run_on_startup=False)
+def weekly_status_timer(timer: func.TimerRequest) -> None:
+    """
+    Post a weekly status report every Friday at 3:00 PM Pacific time.
+
+    The schedule fires at 22:00 and 23:00 UTC on Fridays. Exactly one of those
+    is 15:00 Pacific depending on daylight saving time, so we compute the actual
+    Pacific time and only proceed for the 3 PM slot.
+    """
+    ws_cfg = CONFIG.get("weeklyStatus", {})
+    if not ws_cfg.get("enabled", True):
+        logging.info("Weekly status is disabled in config; skipping.")
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    now_pacific = now_utc.astimezone(weekly.PACIFIC_TZ)
+    target_hour = int(ws_cfg.get("postHourPacific", 15))
+    target_weekday = int(ws_cfg.get("postWeekday", 4))  # Mon=0 ... Fri=4 ... Sun=6
+
+    if now_pacific.weekday() != target_weekday or now_pacific.hour != target_hour:
+        logging.info(
+            f"Weekly status: not the scheduled slot (Pacific now "
+            f"{now_pacific:%A %H:%M}); skipping."
+        )
+        return
+
+    discord_webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not discord_webhook_url:
+        logging.error("DISCORD_WEBHOOK_URL not configured - cannot post weekly status")
+        return
+
+    reports = generate_weekly_status_messages(now_utc)
+    if not reports:
+        logging.warning("Weekly status: no games found to report on.")
+        return
+
+    posted = 0
+    for report in reports:
+        try:
+            response = requests.post(
+                discord_webhook_url,
+                json={
+                    "content": report["message"],
+                    "allowed_mentions": {"parse": ["everyone", "users", "roles"]},
+                },
+                timeout=10,
+            )
+            if response.status_code == 204:
+                posted += 1
+                logging.info(f"Posted weekly status for '{report['displayName']}'")
+            else:
+                logging.error(
+                    f"Failed to post weekly status for '{report['displayName']}': "
+                    f"{response.status_code} - {response.text}"
+                )
+        except requests.RequestException as exc:
+            logging.error(f"Error posting weekly status for '{report['displayName']}': {exc}")
+
+    logging.info(f"Weekly status job complete. Posted {posted} report(s).")
+
+
+@app.route("weekly-status-preview", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def weekly_status_preview(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Return the weekly status message(s) as plain text WITHOUT posting to Discord.
+
+    Optional query parameter: ?gameId=<id> to preview a specific game.
+    Useful for verifying the report before relying on the Friday auto-post.
+    """
+    try:
+        game_id = req.params.get("gameId")
+        explicit = [game_id] if game_id else None
+        reports = generate_weekly_status_messages(explicit_game_ids=explicit)
+
+        if not reports:
+            return func.HttpResponse(
+                "No games found to report on. Set weeklyStatus.gameIds in config.json "
+                "or make sure games are being tracked.",
+                status_code=200,
+                mimetype="text/plain; charset=utf-8",
+            )
+
+        body = "\n\n========================================\n\n".join(
+            report["message"] for report in reports
+        )
+        return func.HttpResponse(body, status_code=200, mimetype="text/plain; charset=utf-8")
+    except Exception as exc:
+        logging.error(f"Failed to generate weekly status preview: {exc}")
+        return func.HttpResponse(
+            json.dumps({"error": str(exc)}),
+            status_code=500,
+            mimetype="application/json",
         )
