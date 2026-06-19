@@ -18,6 +18,9 @@
         "autoDiscoverGames": true,
         "gameIds": [],
         "defaultTargetRounds": 500,
+        "velocityChart": {
+            "enabled": true
+        },
         "gameSpeedTargetRounds": {
             "GAMESPEED_ONLINE": 250,
             "GAMESPEED_QUICK": 330,

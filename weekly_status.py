@@ -19,6 +19,7 @@ player has moved), which is exactly the user-facing notion of a "turn" here.
 
 from __future__ import annotations
 
+import io
 import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -62,6 +63,29 @@ def fetch_pydt_turns(game_id: str, start_turn: int, end_turn: int) -> list:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def fetch_pydt_turns_full(game_id: str, end_turn: int, chunk: int = 500) -> list:
+    """
+    Fetch every per-turn record from turn 1 through ``end_turn``.
+
+    The PYDT turns endpoint is range-based, so a long game is fetched in
+    chunks to keep individual requests modest. Failed chunks are skipped
+    (best effort) so a single hiccup doesn't sink the whole report.
+    """
+    end_turn = max(1, int(end_turn))
+    all_turns: list = []
+    start = 1
+    while start <= end_turn:
+        stop = min(end_turn, start + chunk - 1)
+        try:
+            all_turns.extend(fetch_pydt_turns(game_id, start, stop))
+        except Exception as exc:  # pragma: no cover - network best effort
+            logging.warning(
+                f"Could not fetch turns {start}-{stop} for game {game_id}: {exc}"
+            )
+        start = stop + 1
+    return all_turns
 
 
 def fetch_pydt_user_name(steam_id: str) -> str:
@@ -261,6 +285,121 @@ def compute_eta(
 
 
 # ---------------------------------------------------------------------------
+# Weekly velocity (full-history chart data)
+# ---------------------------------------------------------------------------
+def _week_start(dt: datetime) -> datetime:
+    """Return the Pacific-local Monday (00:00) of the week containing ``dt``."""
+    local = dt.astimezone(PACIFIC_TZ)
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight - timedelta(days=midnight.weekday())
+
+
+def compute_weekly_velocity(game: dict, now: datetime) -> dict:
+    """
+    Build a one-point-per-calendar-week velocity series over the game's full
+    history: how many rounds (turns) were completed during each week.
+
+    Weeks are anchored to Pacific-local Mondays so they line up with the
+    Friday report cadence. Weeks with no play are included as zeros so the
+    chart shows a continuous timeline. Velocity for a week is the number of
+    new rounds reached that week (cumulative max round diffed week over week),
+    which makes the per-week values sum to the total rounds played.
+    """
+    game_id = game.get("gameId")
+    current_turn = int(
+        game.get("gameTurnRangeKey")
+        or (int(game.get("turnsPlayed") or 0) + int(game.get("turnsSkipped") or 0))
+        or 1
+    )
+
+    turns = fetch_pydt_turns_full(game_id, current_turn)
+
+    # Highest round reached within each week bucket.
+    week_max_round: dict[datetime, int] = {}
+    min_round = None
+    for turn in turns:
+        end = _parse_date(turn.get("endDate"))
+        round_no = int(turn.get("round") or 0)
+        if end is None or round_no <= 0:
+            continue
+        if min_round is None or round_no < min_round:
+            min_round = round_no
+        wk = _week_start(end)
+        if wk not in week_max_round or round_no > week_max_round[wk]:
+            week_max_round[wk] = round_no
+
+    if not week_max_round:
+        return {"points": [], "total_rounds": 0, "weeks": 0}
+
+    first_week = min(week_max_round)
+    last_week = _week_start(now)
+    if last_week < first_week:
+        last_week = first_week
+
+    # Walk every calendar week from the first played week to "now", filling
+    # gaps. Velocity = (cumulative max round this week) - (previous week's).
+    points = []
+    baseline = (min_round - 1) if min_round is not None else 0
+    running_max = baseline
+    week = first_week
+    while week <= last_week:
+        prev_max = running_max
+        if week in week_max_round:
+            running_max = max(running_max, week_max_round[week])
+        points.append((week, running_max - prev_max))
+        week += timedelta(days=7)
+
+    total_rounds = (running_max - baseline) if min_round is not None else 0
+    return {
+        "points": points,  # list of (week_start_datetime, rounds_completed)
+        "total_rounds": total_rounds,
+        "weeks": len(points),
+    }
+
+
+def render_velocity_png(velocity: dict, display_name: str) -> "bytes | None":
+    """
+    Render the weekly velocity series to a PNG (bytes) using matplotlib.
+
+    Returns ``None`` if there's nothing to plot or matplotlib is unavailable.
+    """
+    points = (velocity or {}).get("points") or []
+    if not points:
+        return None
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # headless backend (no display on the server)
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+    except Exception as exc:  # pragma: no cover - dependency/runtime guard
+        logging.warning(f"matplotlib unavailable; skipping velocity chart: {exc}")
+        return None
+
+    weeks = [wk for wk, _ in points]
+    values = [val for _, val in points]
+
+    fig, ax = plt.subplots(figsize=(7.0, 3.6), dpi=110)
+    discord_blurple = "#5865F2"
+    ax.fill_between(weeks, values, color=discord_blurple, alpha=0.18)
+    ax.plot(weeks, values, color=discord_blurple, linewidth=2, marker="o", markersize=4)
+
+    ax.set_title(f"Weekly Velocity — {display_name}", fontsize=12, fontweight="bold")
+    ax.set_ylabel("turns / week")
+    ax.set_ylim(bottom=0)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    fig.autofmt_xdate(rotation=45, ha="right")
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Message building
 # ---------------------------------------------------------------------------
 def resolve_player_label(steam_id: str, user_mapping: dict, name_lookup=fetch_pydt_user_name) -> str:
@@ -353,10 +492,25 @@ def build_status_for_game(
     eta = compute_eta(game, now, target_map, default_target)
     message = build_weekly_status_message(game, pace, eta, user_mapping, now, name_lookup)
 
+    display_name = game.get("displayName", game_id)
+
+    chart_enabled = ws_cfg.get("velocityChart", {}).get("enabled", True)
+    chart_png = None
+    velocity = {"points": [], "total_rounds": 0, "weeks": 0}
+    if chart_enabled:
+        try:
+            velocity = compute_weekly_velocity(game, now)
+            chart_png = render_velocity_png(velocity, display_name)
+        except Exception as exc:  # pragma: no cover - chart is best effort
+            logging.warning(f"Could not build velocity chart for {game_id}: {exc}")
+
     return {
         "gameId": game_id,
-        "displayName": game.get("displayName", game_id),
+        "displayName": display_name,
         "message": message,
         "pace": pace,
         "eta": eta,
+        "velocity": velocity,
+        "chartPng": chart_png,  # PNG bytes for a Discord attachment, or None
     }
+

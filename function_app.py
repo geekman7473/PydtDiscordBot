@@ -818,6 +818,43 @@ def generate_weekly_status_messages(now=None, explicit_game_ids=None) -> list:
     return reports
 
 
+def _post_weekly_report_to_discord(webhook_url: str, report: dict):
+    """
+    Post a single weekly report to Discord.
+
+    If a velocity chart PNG is present, upload it as a real attachment so the
+    image is hosted on Discord's own CDN and embedded inline beneath the text.
+    Otherwise fall back to a plain text-only message.
+    """
+    allowed_mentions = {"parse": ["everyone", "users", "roles"]}
+    chart_png = report.get("chartPng")
+
+    if chart_png:
+        payload = {
+            "content": report["message"],
+            "allowed_mentions": allowed_mentions,
+            "embeds": [
+                {
+                    "title": "📈 Weekly Velocity",
+                    "color": 0x5865F2,
+                    "image": {"url": "attachment://velocity.png"},
+                }
+            ],
+        }
+        return requests.post(
+            webhook_url,
+            data={"payload_json": json.dumps(payload)},
+            files={"file": ("velocity.png", chart_png, "image/png")},
+            timeout=15,
+        )
+
+    return requests.post(
+        webhook_url,
+        json={"content": report["message"], "allowed_mentions": allowed_mentions},
+        timeout=10,
+    )
+
+
 @app.timer_trigger(schedule="0 0 22,23 * * 5", arg_name="timer", run_on_startup=False)
 def weekly_status_timer(timer: func.TimerRequest) -> None:
     """
@@ -857,15 +894,8 @@ def weekly_status_timer(timer: func.TimerRequest) -> None:
     posted = 0
     for report in reports:
         try:
-            response = requests.post(
-                discord_webhook_url,
-                json={
-                    "content": report["message"],
-                    "allowed_mentions": {"parse": ["everyone", "users", "roles"]},
-                },
-                timeout=10,
-            )
-            if response.status_code == 204:
+            response = _post_weekly_report_to_discord(discord_webhook_url, report)
+            if response.status_code in (200, 204):
                 posted += 1
                 logging.info(f"Posted weekly status for '{report['displayName']}'")
             else:
