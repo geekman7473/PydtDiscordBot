@@ -13,7 +13,8 @@
     },
     "weeklyStatus": {
         "enabled": true,
-        "postHourPacific": 12,
+        "postHourPacific": 13,
+        "postMinutePacific": 15,
         "postWeekday": 4,
         "autoDiscoverGames": true,
         "gameIds": [],

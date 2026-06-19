@@ -855,14 +855,17 @@ def _post_weekly_report_to_discord(webhook_url: str, report: dict):
     )
 
 
-@app.timer_trigger(schedule="0 0 22,23 * * 5", arg_name="timer", run_on_startup=False)
+@app.timer_trigger(schedule="0 */15 * * * *", arg_name="timer", run_on_startup=False)
 def weekly_status_timer(timer: func.TimerRequest) -> None:
     """
-    Post a weekly status report every Friday at 3:00 PM Pacific time.
+    Post a weekly status report at the day/time configured in ``config.json``
+    (``weeklyStatus.postWeekday`` / ``postHourPacific`` / ``postMinutePacific``).
 
-    The schedule fires at 22:00 and 23:00 UTC on Fridays. Exactly one of those
-    is 15:00 Pacific depending on daylight saving time, so we compute the actual
-    Pacific time and only proceed for the 3 PM slot.
+    The Azure timer fires every 15 minutes; each invocation compares the current
+    Pacific time against the configured slot and only the matching slot actually
+    posts. Driving the schedule entirely from config (rather than the cron
+    expression) means changing the post time only requires a config edit, and
+    daylight saving time is handled automatically because we convert to Pacific.
     """
     ws_cfg = CONFIG.get("weeklyStatus", {})
     if not ws_cfg.get("enabled", True):
@@ -872,12 +875,21 @@ def weekly_status_timer(timer: func.TimerRequest) -> None:
     now_utc = datetime.now(timezone.utc)
     now_pacific = now_utc.astimezone(weekly.PACIFIC_TZ)
     target_hour = int(ws_cfg.get("postHourPacific", 15))
+    target_minute = int(ws_cfg.get("postMinutePacific", 0))
     target_weekday = int(ws_cfg.get("postWeekday", 4))  # Mon=0 ... Fri=4 ... Sun=6
 
-    if now_pacific.weekday() != target_weekday or now_pacific.hour != target_hour:
+    # The timer fires every 15 minutes, so match the configured slot by its
+    # 15-minute bucket. This stays robust to the exact second the trigger runs
+    # and honors any future change to the configured weekday/hour/minute.
+    in_slot = (
+        now_pacific.weekday() == target_weekday
+        and now_pacific.hour == target_hour
+        and now_pacific.minute // 15 == target_minute // 15
+    )
+    if not in_slot:
         logging.info(
             f"Weekly status: not the scheduled slot (Pacific now "
-            f"{now_pacific:%A %H:%M}); skipping."
+            f"{now_pacific:%A %H:%M}, target {target_hour:02d}:{target_minute:02d}); skipping."
         )
         return
 
