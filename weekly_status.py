@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import logging
+import random
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -402,6 +403,51 @@ def render_velocity_png(velocity: dict, display_name: str) -> "bytes | None":
 # ---------------------------------------------------------------------------
 # Message building
 # ---------------------------------------------------------------------------
+# Congratulation lines for the fastest turn of the week. Each is a format
+# template with ``{label}`` (player), ``{duration}`` (e.g. "16 minutes") and
+# ``{round}`` (the in-game round number) placeholders. One is chosen at random.
+FASTEST_TURN_CONGRATS = [
+    "{label} blitzed their turn in just **{duration}** (round {round}). Take a bow! 🎖️",
+    "Speed demon alert! {label} wrapped up round {round} in a blink — **{duration}**. ⚡",
+    "{label} clocked the fastest turn this week: **{duration}** on round {round}. Lightning fast! 🏎️",
+    "Give it up for {label}, who smashed out round {round} in **{duration}**. 🏆",
+    "{label} didn't keep anyone waiting — round {round} done in **{duration}**. 👏",
+    "Record pace! {label} finished round {round} in **{duration}**. The rest of us are taking notes. 📝",
+    "{label} treated their turn like a speedrun: round {round} in **{duration}**. 🕹️",
+    "Hats off to {label} — **{duration}** to clear round {round}. Efficiency incarnate. 🎩",
+    "{label} blinked and round {round} was over. Official time: **{duration}**. 😮",
+    "The fastest hands in the empire belong to {label}: round {round} in **{duration}**. 🤠",
+    "{label} took their turn so fast the barbarians didn't even notice. **{duration}** on round {round}. 🏹",
+    "Zoom! {label} powered through round {round} in **{duration}**. 💨",
+    "{label} set the weekly benchmark — round {round} in a tidy **{duration}**. 📏",
+    "No dawdling here: {label} knocked out round {round} in **{duration}**. 🥇",
+    "{label} wins this week's golden stopwatch with **{duration}** on round {round}. ⏱️",
+    "{label} made it look easy: round {round} finished in **{duration}**. Smooth. 🧈",
+    "Fastest turn of the week goes to {label} — **{duration}** flat on round {round}. 🚀",
+    "{label} came, saw, and ended their turn in **{duration}** (round {round}). 🏛️",
+    "{label} didn't break a sweat — round {round} done in **{duration}**. 💪",
+    "Blink and you'll miss it: {label} finished round {round} in **{duration}**. 👀",
+    "{label} is playing on fast-forward — round {round} in **{duration}**. ⏩",
+    "All hail {label}, who razed round {round} in just **{duration}**. 👑",
+    "{label} finished round {round} in **{duration}** — faster than my will to live on a Monday. ☕",
+    "Scientists are baffled: {label} bent spacetime to clear round {round} in **{duration}**. 🔬",
+    "{label} ended their turn in **{duration}**. The loading screen took longer than that. Round {round}. ⌛",
+    "BREAKING: {label} completes round {round} in **{duration}**, immediately starts trash-talking. 📰",
+    "{label} did round {round} in **{duration}** while you were still reading the previous message. 🫵",
+    "Gandhi requested {label}'s nukes be classified as a war crime after that **{duration}** turn (round {round}). ☢️",
+    "{label} cleared round {round} in **{duration}**. Sun Tzu is taking notes from beyond the grave. 📜",
+    "{label} finished round {round} so fast (**{duration}**) the AI conceded out of respect. 🤖",
+    "Witnesses say {label} didn't even sit down — round {round} obliterated in **{duration}**. 🪑",
+    "{label} speedran round {round} in **{duration}**. Mods are asking for a frame-by-frame review. 🎥",
+]
+
+
+def pick_fastest_turn_congrats(label: str, duration: str, round_no, rng=random) -> str:
+    """Return a randomly chosen congratulation line for the fastest turn."""
+    template = rng.choice(FASTEST_TURN_CONGRATS)
+    return template.format(label=label, duration=duration, round=round_no)
+
+
 def resolve_player_label(steam_id: str, user_mapping: dict, name_lookup=fetch_pydt_user_name) -> str:
     """Build a Discord-friendly player label, preferring an @mention."""
     discord_id = (user_mapping or {}).get(steam_id, "")
@@ -434,8 +480,9 @@ def build_weekly_status_message(
     if fastest and fastest.get("steamId"):
         label = resolve_player_label(fastest["steamId"], user_mapping, name_lookup)
         lines.append(
-            f"{label} blitzed their turn in just **{format_duration(fastest['seconds'])}** "
-            f"(round {fastest['round']}). Take a bow! 🎖️"
+            pick_fastest_turn_congrats(
+                label, format_duration(fastest["seconds"]), fastest["round"]
+            )
         )
     else:
         lines.append("Nobody finished a turn this week. The barbarians are getting bored. 🏹")
