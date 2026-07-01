@@ -440,6 +440,82 @@ def update_turn_tracking(game_name: str, game_id: str, steam_username: str, stea
         logging.error(f"Failed to update turn tracking: {e}")
 
 
+def fetch_current_turn_from_api(game_id: str) -> "dict | None":
+    """
+    Fetch the authoritative current-turn state for a game from the PYDT API.
+
+    Returns a dict with the current player's Steam ID, round, completion flag,
+    and the estimated turn-start time, or ``None`` if the lookup fails or no
+    game id is available. Used to guard against turn-transition webhooks that
+    we may have missed.
+    """
+    if not game_id:
+        return None
+    try:
+        game = weekly.fetch_pydt_game(game_id)
+    except Exception as e:
+        logging.warning(f"Could not verify current turn via PYDT API for game {game_id}: {e}")
+        return None
+
+    return {
+        "currentPlayerSteamId": str(game.get("currentPlayerSteamId") or ""),
+        "round": str(int(game.get("round") or 0)),
+        "completed": bool(game.get("completed")),
+        "lastTurnEndDate": str(game.get("lastTurnEndDate") or ""),
+    }
+
+
+def reconcile_tracking_with_api(table_client, entity, actual, user_mapping) -> bool:
+    """
+    Reconcile our tracked current player against the PYDT API's authoritative view.
+
+    Returns ``True`` when our record matches the API (safe to send the reminder).
+    When a turn transition was missed, corrects the tracking record to reflect
+    the real current player and returns ``False`` so the caller skips the
+    reminder this cycle rather than nagging the wrong player.
+    """
+    tracked_steam_id = str(entity.get("steamId") or "")
+    api_steam_id = actual.get("currentPlayerSteamId", "")
+
+    # Without a Steam ID on either side we can't compare; trust our record.
+    if not tracked_steam_id or not api_steam_id:
+        return True
+
+    if tracked_steam_id == api_steam_id:
+        return True
+
+    game_name = entity.get("gameName", "Unknown Game")
+    logging.warning(
+        f"Turn tracking out of sync for '{game_name}': tracked {tracked_steam_id}, "
+        f"API reports {api_steam_id}. Correcting before sending reminder."
+    )
+
+    # Game finished since we last heard from the webhook - stop tracking it.
+    if actual.get("completed"):
+        remove_game_tracking(entity.get("gameId", ""), game_name)
+        return False
+
+    # Point tracking at the real current player. We missed the webhook, so use
+    # the last turn's end date as the best estimate of when this turn started.
+    new_discord_id = user_mapping.get(api_steam_id, "") if api_steam_id else ""
+    new_username = weekly.fetch_pydt_user_name(api_steam_id) or entity.get("steamUsername", "")
+    turn_started_at = actual.get("lastTurnEndDate") or datetime.now(timezone.utc).isoformat()
+
+    entity["steamId"] = api_steam_id
+    entity["steamUsername"] = new_username
+    entity["discordUserId"] = new_discord_id
+    entity["roundNumber"] = actual.get("round", entity.get("roundNumber", "?"))
+    entity["turnStartedAt"] = turn_started_at
+    entity["lastReminderAt"] = ""
+    entity["reminderCount"] = 0
+    try:
+        table_client.upsert_entity(entity)
+    except Exception as e:
+        logging.error(f"Failed to save corrected turn tracking for '{game_name}': {e}")
+
+    return False
+
+
 def remove_game_tracking(game_id: str, game_name: str):
     """Remove a game from tracking (when game ends or is deleted)."""
     try:
@@ -684,6 +760,15 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
                         logging.info(f"Skipping reminder for {game_name} - only {hours_since_last_reminder:.1f} hours since last reminder (interval: {reminder_interval}h)")
                         continue
 
+                # We're about to actually send a reminder. Because we can rarely
+                # miss a turn-transition webhook, verify our view of whose turn
+                # it is against the PYDT API right now (only here, not on every
+                # 15-minute pass, to avoid hammering the public API). If we're
+                # out of sync, tracking is corrected and we skip this cycle.
+                actual = fetch_current_turn_from_api(entity.get("gameId", ""))
+                if actual is not None and not reconcile_tracking_with_api(table_client, entity, actual, user_mapping):
+                    continue
+
                 # Pick a reminder based on intensity level
                 snark = get_reminder_by_intensity(hours_waiting)
 
@@ -855,17 +940,14 @@ def _post_weekly_report_to_discord(webhook_url: str, report: dict):
     )
 
 
-@app.timer_trigger(schedule="0 0 * * * *", arg_name="timer", run_on_startup=False)
+@app.timer_trigger(schedule="0 0 22,23 * * 5", arg_name="timer", run_on_startup=False)
 def weekly_status_timer(timer: func.TimerRequest) -> None:
     """
-    Post a weekly status report at the day/time configured in ``config.json``
-    (``weeklyStatus.postWeekday`` / ``postHourPacific``).
+    Post a weekly status report every Friday at 3:00 PM Pacific time.
 
-    The Azure timer fires hourly; each invocation compares the current Pacific
-    time against the configured slot and only the matching slot actually posts.
-    Driving the schedule entirely from config (rather than the cron expression)
-    means changing the post time only requires a config edit, and daylight
-    saving time is handled automatically because we convert to Pacific.
+    The schedule fires at 22:00 and 23:00 UTC on Fridays. Exactly one of those
+    is 15:00 Pacific depending on daylight saving time, so we compute the actual
+    Pacific time and only proceed for the 3 PM slot.
     """
     ws_cfg = CONFIG.get("weeklyStatus", {})
     if not ws_cfg.get("enabled", True):
@@ -877,12 +959,10 @@ def weekly_status_timer(timer: func.TimerRequest) -> None:
     target_hour = int(ws_cfg.get("postHourPacific", 15))
     target_weekday = int(ws_cfg.get("postWeekday", 4))  # Mon=0 ... Fri=4 ... Sun=6
 
-    # The timer fires hourly, so match the configured slot by weekday and hour.
-    # This honors any future change to the configured weekday/hour.
     if now_pacific.weekday() != target_weekday or now_pacific.hour != target_hour:
         logging.info(
             f"Weekly status: not the scheduled slot (Pacific now "
-            f"{now_pacific:%A %H:%M}, target {target_hour:02d}:00); skipping."
+            f"{now_pacific:%A %H:%M}); skipping."
         )
         return
 
