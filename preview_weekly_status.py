@@ -1,7 +1,7 @@
 """
 Local preview for the weekly status report.
 
-Renders the message(s) that the bot would post on Friday at 3 PM Pacific,
+Renders the message(s) that the bot would post on Friday at noon Pacific,
 using live data from the public PYDT API. Nothing is posted to Discord.
 
 Usage:

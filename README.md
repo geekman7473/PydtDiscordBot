@@ -9,7 +9,7 @@ When PYDT detects a new turn, it sends a webhook to this Azure Function, which p
 - Receives PYDT webhooks and posts to Discord
 - Maps Steam64 IDs to Discord user IDs for @mentions
 - Sends periodic reminders until the player takes their turn
-- Posts a weekly status report (fastest turn, play rate, and projected finish date)
+- Posts a weekly status report (fastest turn, worst offender, play rate vs. target, and projected finish date)
 - Runs on Azure Functions (essentially free for this use case)
 - CI/CD via GitHub Actions
 
@@ -244,10 +244,13 @@ Configure the thresholds in `config.json`:
 Once a week the bot posts a status report to Discord that:
 
 - **Rewards the fastest turn** taken during the week (with an @mention).
+- Calls out the week's **worst offender** — whoever sat on a single turn the longest. If two players tie on that, the one with more **skipped turns** takes the crown. If nobody completed a turn at all, the most-skipped player wins it by default.
 - Reports the week's **play rate in "turns/day"**, where one "turn" is a full round (every player gets to move).
+- Runs a **velocity check** against the configured target (default: 1 round/day), thanking the group when it's on pace and admonishing it when it isn't.
 - Computes the **overall progression rate** since the game started and projects an **ETA for finishing the game**, using the public PYDT API.
+- Tracks **ETA drift** — how many days the projected finish date moved over the past week. Slipping later is bad; staying flat or pulling in is good.
 
-The report is posted **every Friday at 3:00 PM Pacific** (daylight saving time is handled automatically). All of the data comes from the anonymous PYDT API, so no extra credentials are required.
+The report is posted **every Friday at 12:00 PM Pacific** (daylight saving time is handled automatically). All of the data comes from the anonymous PYDT API, so no extra credentials are required.
 
 Configure it in `config.json`:
 
@@ -255,10 +258,11 @@ Configure it in `config.json`:
 {
   "weeklyStatus": {
     "enabled": true,
-    "postHourPacific": 15,
+    "postHourPacific": 12,
     "postWeekday": 4,
     "autoDiscoverGames": true,
     "gameIds": [],
+    "velocityTargetRoundsPerDay": 1,
     "defaultTargetRounds": 500,
     "gameSpeedTargetRounds": {
       "GAMESPEED_ONLINE": 250,
@@ -274,14 +278,30 @@ Configure it in `config.json`:
 | Setting | Description |
 |---------|-------------|
 | `enabled` | Set to `false` to turn off the weekly report |
-| `postHourPacific` | Hour (0-23, Pacific) to post the report (default: 15 = 3 PM) |
+| `postHourPacific` | Hour (0-23, Pacific) to post the report (default: 12 = noon) |
 | `postWeekday` | Day to post (Mon=0 … Fri=4 … Sun=6; default: 4 = Friday) |
 | `autoDiscoverGames` | If no `gameIds` are set and no games are tracked yet, find the group's game from the mapped players |
 | `gameIds` | Optional list of PYDT game IDs to report on. Leave empty to use tracked/auto-discovered games |
+| `velocityTargetRoundsPerDay` | Full rounds per day the group is aiming for (default: 1). Set to `0` to drop the velocity section |
 | `defaultTargetRounds` | Turn limit used for the ETA when the game speed isn't listed below |
 | `gameSpeedTargetRounds` | Civ 6 game-end turn per game speed (a PYDT "round" = the in-game Civ turn) |
 
 > **Note:** The ETA assumes the game runs to its turn limit for the configured game speed. A victory before then will, of course, finish it sooner.
+
+> **Changing the post time:** `postHourPacific` is enforced in code, but the Azure timer cron in `function_app.py` (`0 0 19,20 * * 5`) is what wakes the function up. The two UTC hours bracket noon Pacific across daylight saving time. If you change `postHourPacific`, change the cron to match (Pacific hour + 7 and + 8).
+
+#### ETA drift tracking
+
+Nothing is stored between runs. Last week's ETA is **recomputed** from live PYDT data: the bot rewinds to the round the game was on seven days ago and runs the same projection from that point, using the current config. The two dates are then compared:
+
+```
+• ETA: **December 8, 2028** (about 2.4 years to go)
+• ETA drift: **slipped 7 days** since last week (was December 1, 2028) 📉
+```
+
+Because the baseline is derived rather than remembered, drift shows up correctly on the very first report, in local previews, and after any redeploy or outage. The trade-off is that changing `defaultTargetRounds` or `gameSpeedTargetRounds` retroactively rewrites the baseline too — the drift always answers "given today's settings, how did this week move the finish line?"
+
+A week slower than the game's lifetime average pushes the ETA out; a faster week pulls it in. A completely dead week still reports a slip, since the finish line got a week further away for free.
 
 #### Previewing the report
 

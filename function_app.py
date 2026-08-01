@@ -818,14 +818,17 @@ def generate_weekly_status_messages(now=None, explicit_game_ids=None) -> list:
     return reports
 
 
-@app.timer_trigger(schedule="0 0 22,23 * * 5", arg_name="timer", run_on_startup=False)
+@app.timer_trigger(schedule="0 0 19,20 * * 5", arg_name="timer", run_on_startup=False)
 def weekly_status_timer(timer: func.TimerRequest) -> None:
     """
-    Post a weekly status report every Friday at 3:00 PM Pacific time.
+    Post a weekly status report every Friday at 12:00 PM Pacific time.
 
-    The schedule fires at 22:00 and 23:00 UTC on Fridays. Exactly one of those
-    is 15:00 Pacific depending on daylight saving time, so we compute the actual
-    Pacific time and only proceed for the 3 PM slot.
+    The schedule fires at 19:00 and 20:00 UTC on Fridays. Exactly one of those
+    is 12:00 Pacific depending on daylight saving time, so we compute the actual
+    Pacific time and only proceed for the noon slot.
+
+    Note: the cron above must bracket weeklyStatus.postHourPacific. If you move
+    that setting, move these UTC hours to match (Pacific hour + 7 and + 8).
     """
     ws_cfg = CONFIG.get("weeklyStatus", {})
     if not ws_cfg.get("enabled", True):

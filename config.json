@@ -13,10 +13,11 @@
     },
     "weeklyStatus": {
         "enabled": true,
-        "postHourPacific": 15,
+        "postHourPacific": 12,
         "postWeekday": 4,
         "autoDiscoverGames": true,
         "gameIds": [],
+        "velocityTargetRoundsPerDay": 1,
         "defaultTargetRounds": 500,
         "gameSpeedTargetRounds": {
             "GAMESPEED_ONLINE": 250,
