@@ -50,6 +50,20 @@ def main(argv):
         print(f"GAME: {report['displayName']}  ({game_id})")
         print("=" * 60)
         print(report["message"])
+
+        chart_png = report.get("chartPng")
+        if chart_png:
+            out_path = ROOT / f"velocity_{game_id}.png"
+            with open(out_path, "wb") as handle:
+                handle.write(chart_png)
+            velocity = report.get("velocity", {})
+            print(
+                f"\n[chart] Wrote velocity chart to {out_path.name} "
+                f"({velocity.get('weeks', 0)} weeks, "
+                f"{velocity.get('total_rounds', 0)} total rounds)"
+            )
+        else:
+            print("\n[chart] No velocity chart generated (no data or matplotlib missing).")
         print()
 
     return 0

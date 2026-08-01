@@ -19,6 +19,9 @@
         "gameIds": [],
         "velocityTargetRoundsPerDay": 1,
         "defaultTargetRounds": 500,
+        "velocityChart": {
+            "enabled": true
+        },
         "gameSpeedTargetRounds": {
             "GAMESPEED_ONLINE": 250,
             "GAMESPEED_QUICK": 330,

@@ -440,6 +440,82 @@ def update_turn_tracking(game_name: str, game_id: str, steam_username: str, stea
         logging.error(f"Failed to update turn tracking: {e}")
 
 
+def fetch_current_turn_from_api(game_id: str) -> "dict | None":
+    """
+    Fetch the authoritative current-turn state for a game from the PYDT API.
+
+    Returns a dict with the current player's Steam ID, round, completion flag,
+    and the estimated turn-start time, or ``None`` if the lookup fails or no
+    game id is available. Used to guard against turn-transition webhooks that
+    we may have missed.
+    """
+    if not game_id:
+        return None
+    try:
+        game = weekly.fetch_pydt_game(game_id)
+    except Exception as e:
+        logging.warning(f"Could not verify current turn via PYDT API for game {game_id}: {e}")
+        return None
+
+    return {
+        "currentPlayerSteamId": str(game.get("currentPlayerSteamId") or ""),
+        "round": str(int(game.get("round") or 0)),
+        "completed": bool(game.get("completed")),
+        "lastTurnEndDate": str(game.get("lastTurnEndDate") or ""),
+    }
+
+
+def reconcile_tracking_with_api(table_client, entity, actual, user_mapping) -> bool:
+    """
+    Reconcile our tracked current player against the PYDT API's authoritative view.
+
+    Returns ``True`` when our record matches the API (safe to send the reminder).
+    When a turn transition was missed, corrects the tracking record to reflect
+    the real current player and returns ``False`` so the caller skips the
+    reminder this cycle rather than nagging the wrong player.
+    """
+    tracked_steam_id = str(entity.get("steamId") or "")
+    api_steam_id = actual.get("currentPlayerSteamId", "")
+
+    # Without a Steam ID on either side we can't compare; trust our record.
+    if not tracked_steam_id or not api_steam_id:
+        return True
+
+    if tracked_steam_id == api_steam_id:
+        return True
+
+    game_name = entity.get("gameName", "Unknown Game")
+    logging.warning(
+        f"Turn tracking out of sync for '{game_name}': tracked {tracked_steam_id}, "
+        f"API reports {api_steam_id}. Correcting before sending reminder."
+    )
+
+    # Game finished since we last heard from the webhook - stop tracking it.
+    if actual.get("completed"):
+        remove_game_tracking(entity.get("gameId", ""), game_name)
+        return False
+
+    # Point tracking at the real current player. We missed the webhook, so use
+    # the last turn's end date as the best estimate of when this turn started.
+    new_discord_id = user_mapping.get(api_steam_id, "") if api_steam_id else ""
+    new_username = weekly.fetch_pydt_user_name(api_steam_id) or entity.get("steamUsername", "")
+    turn_started_at = actual.get("lastTurnEndDate") or datetime.now(timezone.utc).isoformat()
+
+    entity["steamId"] = api_steam_id
+    entity["steamUsername"] = new_username
+    entity["discordUserId"] = new_discord_id
+    entity["roundNumber"] = actual.get("round", entity.get("roundNumber", "?"))
+    entity["turnStartedAt"] = turn_started_at
+    entity["lastReminderAt"] = ""
+    entity["reminderCount"] = 0
+    try:
+        table_client.upsert_entity(entity)
+    except Exception as e:
+        logging.error(f"Failed to save corrected turn tracking for '{game_name}': {e}")
+
+    return False
+
+
 def remove_game_tracking(game_id: str, game_name: str):
     """Remove a game from tracking (when game ends or is deleted)."""
     try:
@@ -684,6 +760,15 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
                         logging.info(f"Skipping reminder for {game_name} - only {hours_since_last_reminder:.1f} hours since last reminder (interval: {reminder_interval}h)")
                         continue
 
+                # We're about to actually send a reminder. Because we can rarely
+                # miss a turn-transition webhook, verify our view of whose turn
+                # it is against the PYDT API right now (only here, not on every
+                # 15-minute pass, to avoid hammering the public API). If we're
+                # out of sync, tracking is corrected and we skip this cycle.
+                actual = fetch_current_turn_from_api(entity.get("gameId", ""))
+                if actual is not None and not reconcile_tracking_with_api(table_client, entity, actual, user_mapping):
+                    continue
+
                 # Pick a reminder based on intensity level
                 snark = get_reminder_by_intensity(hours_waiting)
 
@@ -818,17 +903,55 @@ def generate_weekly_status_messages(now=None, explicit_game_ids=None) -> list:
     return reports
 
 
-@app.timer_trigger(schedule="0 0 19,20 * * 5", arg_name="timer", run_on_startup=False)
+def _post_weekly_report_to_discord(webhook_url: str, report: dict):
+    """
+    Post a single weekly report to Discord.
+
+    If a velocity chart PNG is present, upload it as a real attachment so the
+    image is hosted on Discord's own CDN and embedded inline beneath the text.
+    Otherwise fall back to a plain text-only message.
+    """
+    allowed_mentions = {"parse": ["everyone", "users", "roles"]}
+    chart_png = report.get("chartPng")
+
+    if chart_png:
+        payload = {
+            "content": report["message"],
+            "allowed_mentions": allowed_mentions,
+            "embeds": [
+                {
+                    "title": "📈 Weekly Velocity",
+                    "color": 0x5865F2,
+                    "image": {"url": "attachment://velocity.png"},
+                }
+            ],
+        }
+        return requests.post(
+            webhook_url,
+            data={"payload_json": json.dumps(payload)},
+            files={"file": ("velocity.png", chart_png, "image/png")},
+            timeout=15,
+        )
+
+    return requests.post(
+        webhook_url,
+        json={"content": report["message"], "allowed_mentions": allowed_mentions},
+        timeout=10,
+    )
+
+
+@app.timer_trigger(schedule="0 0 * * * *", arg_name="timer", run_on_startup=False)
 def weekly_status_timer(timer: func.TimerRequest) -> None:
     """
-    Post a weekly status report every Friday at 12:00 PM Pacific time.
+    Post a weekly status report at the day/time configured in ``config.json``
+    (``weeklyStatus.postWeekday`` / ``postHourPacific``; currently Friday noon
+    Pacific).
 
-    The schedule fires at 19:00 and 20:00 UTC on Fridays. Exactly one of those
-    is 12:00 Pacific depending on daylight saving time, so we compute the actual
-    Pacific time and only proceed for the noon slot.
-
-    Note: the cron above must bracket weeklyStatus.postHourPacific. If you move
-    that setting, move these UTC hours to match (Pacific hour + 7 and + 8).
+    The Azure timer fires hourly; each invocation compares the current Pacific
+    time against the configured slot and only the matching slot actually posts.
+    Driving the schedule entirely from config (rather than the cron expression)
+    means changing the post time only requires a config edit, and daylight
+    saving time is handled automatically because we convert to Pacific.
     """
     ws_cfg = CONFIG.get("weeklyStatus", {})
     if not ws_cfg.get("enabled", True):
@@ -837,13 +960,15 @@ def weekly_status_timer(timer: func.TimerRequest) -> None:
 
     now_utc = datetime.now(timezone.utc)
     now_pacific = now_utc.astimezone(weekly.PACIFIC_TZ)
-    target_hour = int(ws_cfg.get("postHourPacific", 15))
+    target_hour = int(ws_cfg.get("postHourPacific", 12))
     target_weekday = int(ws_cfg.get("postWeekday", 4))  # Mon=0 ... Fri=4 ... Sun=6
 
+    # The timer fires hourly, so match the configured slot by weekday and hour.
+    # This honors any future change to the configured weekday/hour.
     if now_pacific.weekday() != target_weekday or now_pacific.hour != target_hour:
         logging.info(
             f"Weekly status: not the scheduled slot (Pacific now "
-            f"{now_pacific:%A %H:%M}); skipping."
+            f"{now_pacific:%A %H:%M}, target {target_hour:02d}:00); skipping."
         )
         return
 
@@ -860,15 +985,8 @@ def weekly_status_timer(timer: func.TimerRequest) -> None:
     posted = 0
     for report in reports:
         try:
-            response = requests.post(
-                discord_webhook_url,
-                json={
-                    "content": report["message"],
-                    "allowed_mentions": {"parse": ["everyone", "users", "roles"]},
-                },
-                timeout=10,
-            )
-            if response.status_code == 204:
+            response = _post_weekly_report_to_discord(discord_webhook_url, report)
+            if response.status_code in (200, 204):
                 posted += 1
                 logging.info(f"Posted weekly status for '{report['displayName']}'")
             else:

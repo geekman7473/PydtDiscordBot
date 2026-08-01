@@ -21,6 +21,7 @@ player has moved), which is exactly the user-facing notion of a "turn" here.
 
 from __future__ import annotations
 
+import io
 import logging
 import random
 from collections import Counter
@@ -69,6 +70,29 @@ def fetch_pydt_turns(game_id: str, start_turn: int, end_turn: int) -> list:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def fetch_pydt_turns_full(game_id: str, end_turn: int, chunk: int = 500) -> list:
+    """
+    Fetch every per-turn record from turn 1 through ``end_turn``.
+
+    The PYDT turns endpoint is range-based, so a long game is fetched in
+    chunks to keep individual requests modest. Failed chunks are skipped
+    (best effort) so a single hiccup doesn't sink the whole report.
+    """
+    end_turn = max(1, int(end_turn))
+    all_turns: list = []
+    start = 1
+    while start <= end_turn:
+        stop = min(end_turn, start + chunk - 1)
+        try:
+            all_turns.extend(fetch_pydt_turns(game_id, start, stop))
+        except Exception as exc:  # pragma: no cover - network best effort
+            logging.warning(
+                f"Could not fetch turns {start}-{stop} for game {game_id}: {exc}"
+            )
+        start = stop + 1
+    return all_turns
 
 
 def fetch_pydt_user_name(steam_id: str) -> str:
@@ -439,6 +463,121 @@ def compute_eta_delta(
 
 
 # ---------------------------------------------------------------------------
+# Weekly velocity (full-history chart data)
+# ---------------------------------------------------------------------------
+def _week_start(dt: datetime) -> datetime:
+    """Return the Pacific-local Monday (00:00) of the week containing ``dt``."""
+    local = dt.astimezone(PACIFIC_TZ)
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight - timedelta(days=midnight.weekday())
+
+
+def compute_weekly_velocity(game: dict, now: datetime) -> dict:
+    """
+    Build a one-point-per-calendar-week velocity series over the game's full
+    history: how many rounds (turns) were completed during each week.
+
+    Weeks are anchored to Pacific-local Mondays so they line up with the
+    Friday report cadence. Weeks with no play are included as zeros so the
+    chart shows a continuous timeline. Velocity for a week is the number of
+    new rounds reached that week (cumulative max round diffed week over week),
+    which makes the per-week values sum to the total rounds played.
+    """
+    game_id = game.get("gameId")
+    current_turn = int(
+        game.get("gameTurnRangeKey")
+        or (int(game.get("turnsPlayed") or 0) + int(game.get("turnsSkipped") or 0))
+        or 1
+    )
+
+    turns = fetch_pydt_turns_full(game_id, current_turn)
+
+    # Highest round reached within each week bucket.
+    week_max_round: dict[datetime, int] = {}
+    min_round = None
+    for turn in turns:
+        end = _parse_date(turn.get("endDate"))
+        round_no = int(turn.get("round") or 0)
+        if end is None or round_no <= 0:
+            continue
+        if min_round is None or round_no < min_round:
+            min_round = round_no
+        wk = _week_start(end)
+        if wk not in week_max_round or round_no > week_max_round[wk]:
+            week_max_round[wk] = round_no
+
+    if not week_max_round:
+        return {"points": [], "total_rounds": 0, "weeks": 0}
+
+    first_week = min(week_max_round)
+    last_week = _week_start(now)
+    if last_week < first_week:
+        last_week = first_week
+
+    # Walk every calendar week from the first played week to "now", filling
+    # gaps. Velocity = (cumulative max round this week) - (previous week's).
+    points = []
+    baseline = (min_round - 1) if min_round is not None else 0
+    running_max = baseline
+    week = first_week
+    while week <= last_week:
+        prev_max = running_max
+        if week in week_max_round:
+            running_max = max(running_max, week_max_round[week])
+        points.append((week, running_max - prev_max))
+        week += timedelta(days=7)
+
+    total_rounds = (running_max - baseline) if min_round is not None else 0
+    return {
+        "points": points,  # list of (week_start_datetime, rounds_completed)
+        "total_rounds": total_rounds,
+        "weeks": len(points),
+    }
+
+
+def render_velocity_png(velocity: dict, display_name: str) -> "bytes | None":
+    """
+    Render the weekly velocity series to a PNG (bytes) using matplotlib.
+
+    Returns ``None`` if there's nothing to plot or matplotlib is unavailable.
+    """
+    points = (velocity or {}).get("points") or []
+    if not points:
+        return None
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # headless backend (no display on the server)
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+    except Exception as exc:  # pragma: no cover - dependency/runtime guard
+        logging.warning(f"matplotlib unavailable; skipping velocity chart: {exc}")
+        return None
+
+    weeks = [wk for wk, _ in points]
+    values = [val for _, val in points]
+
+    fig, ax = plt.subplots(figsize=(7.0, 3.6), dpi=110)
+    discord_blurple = "#5865F2"
+    ax.fill_between(weeks, values, color=discord_blurple, alpha=0.18)
+    ax.plot(weeks, values, color=discord_blurple, linewidth=2, marker="o", markersize=4)
+
+    ax.set_title(f"Weekly Velocity — {display_name}", fontsize=12, fontweight="bold")
+    ax.set_ylabel("turns / week")
+    ax.set_ylim(bottom=0)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    fig.autofmt_xdate(rotation=45, ha="right")
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Message building
 # ---------------------------------------------------------------------------
 WORST_OFFENDER_SNARK = [
@@ -519,6 +658,51 @@ VELOCITY_BEHIND_SNARK = [
     "The math is not flattering, and I ran it twice.",
     "Every day we don't play, the ETA quietly bills us for it. 🧾",
 ]
+
+
+# Congratulation lines for the fastest turn of the week. Each is a format
+# template with ``{label}`` (player), ``{duration}`` (e.g. "16 minutes") and
+# ``{round}`` (the in-game round number) placeholders. One is chosen at random.
+FASTEST_TURN_CONGRATS = [
+    "{label} blitzed their turn in just **{duration}** (round {round}). Take a bow! 🎖️",
+    "Speed demon alert! {label} wrapped up round {round} in a blink — **{duration}**. ⚡",
+    "{label} clocked the fastest turn this week: **{duration}** on round {round}. Lightning fast! 🏎️",
+    "Give it up for {label}, who smashed out round {round} in **{duration}**. 🏆",
+    "{label} didn't keep anyone waiting — round {round} done in **{duration}**. 👏",
+    "Record pace! {label} finished round {round} in **{duration}**. The rest of us are taking notes. 📝",
+    "{label} treated their turn like a speedrun: round {round} in **{duration}**. 🕹️",
+    "Hats off to {label} — **{duration}** to clear round {round}. Efficiency incarnate. 🎩",
+    "{label} blinked and round {round} was over. Official time: **{duration}**. 😮",
+    "The fastest hands in the empire belong to {label}: round {round} in **{duration}**. 🤠",
+    "{label} took their turn so fast the barbarians didn't even notice. **{duration}** on round {round}. 🏹",
+    "Zoom! {label} powered through round {round} in **{duration}**. 💨",
+    "{label} set the weekly benchmark — round {round} in a tidy **{duration}**. 📏",
+    "No dawdling here: {label} knocked out round {round} in **{duration}**. 🥇",
+    "{label} wins this week's golden stopwatch with **{duration}** on round {round}. ⏱️",
+    "{label} made it look easy: round {round} finished in **{duration}**. Smooth. 🧈",
+    "Fastest turn of the week goes to {label} — **{duration}** flat on round {round}. 🚀",
+    "{label} came, saw, and ended their turn in **{duration}** (round {round}). 🏛️",
+    "{label} didn't break a sweat — round {round} done in **{duration}**. 💪",
+    "Blink and you'll miss it: {label} finished round {round} in **{duration}**. 👀",
+    "{label} is playing on fast-forward — round {round} in **{duration}**. ⏩",
+    "All hail {label}, who razed round {round} in just **{duration}**. 👑",
+    "{label} finished round {round} in **{duration}** — faster than my will to live on a Monday. ☕",
+    "Scientists are baffled: {label} bent spacetime to clear round {round} in **{duration}**. 🔬",
+    "{label} ended their turn in **{duration}**. The loading screen took longer than that. Round {round}. ⌛",
+    "BREAKING: {label} completes round {round} in **{duration}**, immediately starts trash-talking. 📰",
+    "{label} did round {round} in **{duration}** while you were still reading the previous message. 🫵",
+    "Gandhi requested {label}'s nukes be classified as a war crime after that **{duration}** turn (round {round}). ☢️",
+    "{label} cleared round {round} in **{duration}**. Sun Tzu is taking notes from beyond the grave. 📜",
+    "{label} finished round {round} so fast (**{duration}**) the AI conceded out of respect. 🤖",
+    "Witnesses say {label} didn't even sit down — round {round} obliterated in **{duration}**. 🪑",
+    "{label} speedran round {round} in **{duration}**. Mods are asking for a frame-by-frame review. 🎥",
+]
+
+
+def pick_fastest_turn_congrats(label: str, duration: str, round_no, rng=random) -> str:
+    """Return a randomly chosen congratulation line for the fastest turn."""
+    template = rng.choice(FASTEST_TURN_CONGRATS)
+    return template.format(label=label, duration=duration, round=round_no)
 
 
 def resolve_player_label(steam_id: str, user_mapping: dict, name_lookup=fetch_pydt_user_name) -> str:
@@ -632,8 +816,9 @@ def build_weekly_status_message(
     if fastest and fastest.get("steamId"):
         label = resolve_player_label(fastest["steamId"], user_mapping, name_lookup)
         lines.append(
-            f"{label} blitzed their turn in just **{format_duration(fastest['seconds'])}** "
-            f"(round {fastest['round']}). Take a bow! 🎖️"
+            pick_fastest_turn_congrats(
+                label, format_duration(fastest["seconds"]), fastest["round"]
+            )
         )
     else:
         lines.append("Nobody finished a turn this week. The barbarians are getting bored. 🏹")
@@ -716,18 +901,36 @@ def build_status_for_game(
 
     pace = compute_weekly_pace(game, now)
     eta = compute_eta(game, now, target_map, default_target)
-    velocity = compute_velocity(pace, velocity_target)
+    # Two different notions of "velocity" live here, so keep them distinct:
+    # velocity_check compares this week against the configured target (text),
+    # while weekly_velocity is the per-week series behind the chart.
+    velocity_check = compute_velocity(pace, velocity_target)
     eta_delta = compute_eta_delta(game, eta, pace, now, target_map, default_target)
     message = build_weekly_status_message(
-        game, pace, eta, user_mapping, now, name_lookup, velocity, eta_delta
+        game, pace, eta, user_mapping, now, name_lookup, velocity_check, eta_delta
     )
+
+    display_name = game.get("displayName", game_id)
+
+    chart_enabled = ws_cfg.get("velocityChart", {}).get("enabled", True)
+    chart_png = None
+    weekly_velocity = {"points": [], "total_rounds": 0, "weeks": 0}
+    if chart_enabled:
+        try:
+            weekly_velocity = compute_weekly_velocity(game, now)
+            chart_png = render_velocity_png(weekly_velocity, display_name)
+        except Exception as exc:  # pragma: no cover - chart is best effort
+            logging.warning(f"Could not build velocity chart for {game_id}: {exc}")
 
     return {
         "gameId": game_id,
-        "displayName": game.get("displayName", game_id),
+        "displayName": display_name,
         "message": message,
         "pace": pace,
         "eta": eta,
-        "velocity": velocity,
+        "velocity": weekly_velocity,  # chart series; consumed by the preview script
+        "velocityCheck": velocity_check,  # this week vs. the configured target
         "etaDelta": eta_delta,
+        "chartPng": chart_png,  # PNG bytes for a Discord attachment, or None
     }
+
