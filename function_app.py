@@ -1005,6 +1005,11 @@ def weekly_status_timer(timer: func.TimerRequest) -> None:
         logging.warning("Weekly status: no games found to report on.")
         return
 
+    for report in reports:
+        if not report["active"]:
+            logging.info(f"Weekly status: skipping '{report['displayName']}' - no turns played in the last 7 days")
+    reports = [report for report in reports if report["active"]]
+
     posted = 0
     for report in reports:
         try:
@@ -1045,7 +1050,9 @@ def weekly_status_preview(req: func.HttpRequest) -> func.HttpResponse:
             )
 
         body = "\n\n========================================\n\n".join(
-            report["message"] for report in reports
+            report["message"] if report["active"]
+            else f"[Not posted on Friday: no turns played in the last 7 days]\n\n{report['message']}"
+            for report in reports
         )
         return func.HttpResponse(body, status_code=200, mimetype="text/plain; charset=utf-8")
     except Exception as exc:

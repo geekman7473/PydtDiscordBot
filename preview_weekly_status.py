@@ -49,6 +49,8 @@ def main(argv):
         print("=" * 60)
         print(f"GAME: {report['displayName']}  ({game_id})")
         print("=" * 60)
+        if not report["active"]:
+            print("[Not posted on Friday: no turns played in the last 7 days]\n")
         print(report["message"])
 
         chart_png = report.get("chartPng")

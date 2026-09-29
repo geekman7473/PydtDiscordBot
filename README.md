@@ -252,6 +252,8 @@ Once a week the bot posts a status report to Discord that:
 
 The report is posted **every Friday at 12:00 PM Pacific** (daylight saving time is handled automatically). All of the data comes from the anonymous PYDT API, so no extra credentials are required.
 
+Games where nobody played a turn in the last 7 days are **skipped** that week, so stalled or abandoned games don't get an `@everyone` report. Skipped turns don't count as activity. The previews below still show those games, marked as not posted.
+
 Configure it in `config.json`:
 
 ```json

@@ -944,6 +944,9 @@ def build_status_for_game(
         "gameId": game_id,
         "displayName": display_name,
         "message": message,
+        # Whether anyone actually played a turn this week. Skipped turns don't
+        # count: a game advancing only on turn timers isn't being played.
+        "active": pace["turns_taken"] > 0,
         "pace": pace,
         "eta": eta,
         "velocity": weekly_velocity,  # chart series; consumed by the preview script
