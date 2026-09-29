@@ -1,5 +1,7 @@
 import azure.functions as func
-from azure.data.tables import TableServiceClient, TableClient
+from azure.core import MatchConditions
+from azure.core.exceptions import ResourceModifiedError
+from azure.data.tables import TableServiceClient, TableClient, UpdateMode
 from datetime import datetime, timezone, timedelta
 import json
 import logging
@@ -440,93 +442,101 @@ def update_turn_tracking(game_name: str, game_id: str, steam_username: str, stea
         logging.error(f"Failed to update turn tracking: {e}")
 
 
-def fetch_current_turn_from_api(game_id: str) -> "dict | None":
+def fetch_game_for_tracking(entity) -> "dict | None":
     """
-    Fetch the authoritative current-turn state for a game from the PYDT API.
+    Fetch the PYDT game a tracking record refers to.
 
-    Returns a dict with the current player's Steam ID, round, completion flag,
-    and the estimated turn-start time, or ``None`` if the lookup fails or no
-    game id is available. Used to guard against turn-transition webhooks that
-    we may have missed.
+    PYDT's turn webhook doesn't include the game ID, so records created from
+    real webhooks never have one. In that case the game is found by name among
+    the tracked player's active games; that player is still in the game even
+    after their turn has ended. Returns ``None`` if they have no active game by
+    that name (e.g. it has finished). API errors propagate to the caller.
     """
-    if not game_id:
-        return None
+    game_id = entity.get("gameId", "")
+    if game_id:
+        return weekly.fetch_pydt_game(game_id)
+
+    steam_id = str(entity.get("steamId") or "")
+    if not steam_id:
+        raise ValueError("tracking record has no game ID or Steam ID to look the game up by")
+    return weekly.find_active_game_by_name(steam_id, entity.get("gameName", ""))
+
+
+def verify_turn_with_api(table_client, entity, user_mapping) -> bool:
+    """
+    Confirm with the PYDT API that it's still the tracked player's turn.
+
+    Returns ``True`` only when the API agrees with our record, so the reminder
+    is safe to send. Otherwise returns ``False`` and the reminder is skipped
+    this cycle rather than risk nagging someone whose turn it isn't:
+
+      * API unreachable: nothing changes; the next 15-minute pass retries.
+      * Game finished or not found: tracking is removed. If the game is in fact
+        still going, the next turn webhook recreates it.
+      * A turn-transition webhook was missed: the record is pointed at the real
+        current player, who gets reminded on a later pass.
+    """
+    game_name = entity.get("gameName", "Unknown Game")
     try:
-        game = weekly.fetch_pydt_game(game_id)
+        game = fetch_game_for_tracking(entity)
     except Exception as e:
-        logging.warning(f"Could not verify current turn via PYDT API for game {game_id}: {e}")
-        return None
+        logging.warning(f"Could not verify current turn via PYDT API for '{game_name}'; skipping reminder: {e}")
+        return False
 
-    return {
-        "currentPlayerSteamId": str(game.get("currentPlayerSteamId") or ""),
-        "round": str(int(game.get("round") or 0)),
-        "completed": bool(game.get("completed")),
-        "lastTurnEndDate": str(game.get("lastTurnEndDate") or ""),
-    }
+    if game is None or game.get("completed"):
+        logging.info(
+            f"'{game_name}' is no longer an active PYDT game for "
+            f"{entity.get('steamUsername', 'the tracked player')}; removing tracking"
+        )
+        remove_game_tracking(table_client, entity)
+        return False
 
-
-def reconcile_tracking_with_api(table_client, entity, actual, user_mapping) -> bool:
-    """
-    Reconcile our tracked current player against the PYDT API's authoritative view.
-
-    Returns ``True`` when our record matches the API (safe to send the reminder).
-    When a turn transition was missed, corrects the tracking record to reflect
-    the real current player and returns ``False`` so the caller skips the
-    reminder this cycle rather than nagging the wrong player.
-    """
     tracked_steam_id = str(entity.get("steamId") or "")
-    api_steam_id = actual.get("currentPlayerSteamId", "")
+    api_steam_id = str(game.get("currentPlayerSteamId") or "")
 
-    # Without a Steam ID on either side we can't compare; trust our record.
-    if not tracked_steam_id or not api_steam_id:
-        return True
+    if not api_steam_id:
+        logging.warning(f"PYDT API reports no current player for '{game_name}'; skipping reminder")
+        return False
 
     if tracked_steam_id == api_steam_id:
         return True
 
-    game_name = entity.get("gameName", "Unknown Game")
     logging.warning(
         f"Turn tracking out of sync for '{game_name}': tracked {tracked_steam_id}, "
         f"API reports {api_steam_id}. Correcting before sending reminder."
     )
 
-    # Game finished since we last heard from the webhook - stop tracking it.
-    if actual.get("completed"):
-        remove_game_tracking(entity.get("gameId", ""), game_name)
-        return False
-
     # Point tracking at the real current player. We missed the webhook, so use
     # the last turn's end date as the best estimate of when this turn started.
-    new_discord_id = user_mapping.get(api_steam_id, "") if api_steam_id else ""
-    new_username = weekly.fetch_pydt_user_name(api_steam_id) or entity.get("steamUsername", "")
-    turn_started_at = actual.get("lastTurnEndDate") or datetime.now(timezone.utc).isoformat()
+    turn_started_at = game.get("lastTurnEndDate") or datetime.now(timezone.utc).isoformat()
 
     entity["steamId"] = api_steam_id
-    entity["steamUsername"] = new_username
-    entity["discordUserId"] = new_discord_id
-    entity["roundNumber"] = actual.get("round", entity.get("roundNumber", "?"))
+    entity["steamUsername"] = weekly.fetch_pydt_user_name(api_steam_id) or api_steam_id
+    entity["discordUserId"] = user_mapping.get(api_steam_id, "")
+    entity["roundNumber"] = str(game.get("round") or entity.get("roundNumber", "?"))
     entity["turnStartedAt"] = turn_started_at
     entity["lastReminderAt"] = ""
     entity["reminderCount"] = 0
     try:
-        table_client.upsert_entity(entity)
+        # Only if the record hasn't changed since we read it: a webhook that
+        # arrived in the meantime has fresher data than our correction.
+        table_client.update_entity(entity, mode=UpdateMode.REPLACE, match_condition=MatchConditions.IfNotModified)
+    except ResourceModifiedError:
+        logging.info(f"Turn tracking for '{game_name}' was updated by a webhook while correcting it; keeping the webhook's version")
     except Exception as e:
         logging.error(f"Failed to save corrected turn tracking for '{game_name}': {e}")
 
     return False
 
 
-def remove_game_tracking(game_id: str, game_name: str):
-    """Remove a game from tracking (when game ends or is deleted)."""
+def remove_game_tracking(table_client, entity):
+    """Stop tracking a game (e.g. once it has finished), unless a webhook just updated it."""
+    game_name = entity.get("gameName", "Unknown Game")
     try:
-        table_client = get_table_client()
-        row_key = sanitize_key(game_id if game_id else game_name)
-        
-        table_client.delete_entity("activegames", row_key)
+        table_client.delete_entity(entity, match_condition=MatchConditions.IfNotModified)
         logging.info(f"Removed tracking for game: {game_name}")
-        
     except Exception as e:
-        logging.warning(f"Could not remove game tracking (may not exist): {e}")
+        logging.warning(f"Could not remove tracking for game '{game_name}' (may have just been updated): {e}")
 
 
 def validate_pydt_payload(data: dict) -> tuple[bool, str]:
@@ -760,13 +770,12 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
                         logging.info(f"Skipping reminder for {game_name} - only {hours_since_last_reminder:.1f} hours since last reminder (interval: {reminder_interval}h)")
                         continue
 
-                # We're about to actually send a reminder. Because we can rarely
-                # miss a turn-transition webhook, verify our view of whose turn
-                # it is against the PYDT API right now (only here, not on every
-                # 15-minute pass, to avoid hammering the public API). If we're
-                # out of sync, tracking is corrected and we skip this cycle.
-                actual = fetch_current_turn_from_api(entity.get("gameId", ""))
-                if actual is not None and not reconcile_tracking_with_api(table_client, entity, actual, user_mapping):
+                # We're about to actually send a reminder. Turn webhooks can go
+                # missing (PYDT skips them for players in vacation mode and gives
+                # up after 5s), so confirm with the PYDT API that it's really
+                # this player's turn (only here, not on every 15-minute pass, to
+                # avoid hammering the public API). If we can't confirm it, skip.
+                if not verify_turn_with_api(table_client, entity, user_mapping):
                     continue
 
                 # Pick a reminder based on intensity level
@@ -792,10 +801,24 @@ def send_turn_reminders(timer: func.TimerRequest) -> None:
                     logging.info(f"Sent reminder #{reminder_count + 1} for {game_name} to {steam_username}")
                     reminders_sent += 1
                     
-                    # Update the reminder tracking
-                    entity["lastReminderAt"] = now.isoformat()
-                    entity["reminderCount"] = reminder_count + 1
-                    table_client.upsert_entity(entity)
+                    # Update only the reminder fields, and only if the record
+                    # hasn't changed since we read it. Writing back the whole
+                    # snapshot would undo a turn webhook that arrived mid-run
+                    # and put the previous player back on the hook.
+                    try:
+                        table_client.update_entity(
+                            {
+                                "PartitionKey": entity["PartitionKey"],
+                                "RowKey": entity["RowKey"],
+                                "lastReminderAt": now.isoformat(),
+                                "reminderCount": reminder_count + 1,
+                            },
+                            mode=UpdateMode.MERGE,
+                            etag=entity.metadata.get("etag"),
+                            match_condition=MatchConditions.IfNotModified,
+                        )
+                    except ResourceModifiedError:
+                        logging.info(f"Turn tracking for {game_name} changed during the reminder run (new turn); leaving it as is")
                 else:
                     logging.error(f"Failed to send reminder for {game_name}: {response.status_code}")
                     

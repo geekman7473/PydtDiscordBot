@@ -106,6 +106,24 @@ def fetch_pydt_user_name(steam_id: str) -> str:
         return ""
 
 
+def find_active_game_by_name(steam_id: str, game_name: str) -> "dict | None":
+    """
+    Find the game called ``game_name`` among a player's active PYDT games.
+
+    PYDT's turn webhook sends the game's display name but not its ID, so this is
+    how we get from a webhook back to the game in the API. Returns the full game
+    object, or ``None`` if the player has no active game by that name. Network
+    and API errors propagate to the caller.
+    """
+    resp = requests.get(f"{PYDT_API_BASE}/user/{steam_id}", timeout=HTTP_TIMEOUT)
+    resp.raise_for_status()
+    for game_id in resp.json().get("activeGameIds", []) or []:
+        game = fetch_pydt_game(game_id)
+        if game.get("displayName") == game_name:
+            return game
+    return None
+
+
 def discover_game_ids_for_steam_ids(steam_ids, min_shared: int = 2, limit: int = 12) -> list:
     """
     Discover the group's active game(s) from a set of Steam IDs.
