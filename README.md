@@ -4,6 +4,10 @@ A serverless Discord bot that notifies players when it's their turn in [Play You
 
 When PYDT detects a new turn, it sends a webhook to this Azure Function, which posts a message to your Discord channel mentioning the correct player.
 
+# AI Disclaimer
+
+This thing is just for fun, and for my group's needs. To that end, it is almost 100% vibe coded. Use at your own risk.
+
 ## Features
 
 - Receives PYDT webhooks and posts to Discord
